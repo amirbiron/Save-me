@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: save-me-bot
+    env: python # <-- השינוי המרכזי: חזרה לסביבת פייתון
+    plan: free
+    buildCommand: "pip install -r requirements.txt" # <-- פקודת התקנת הספריות
+    startCommand: "gunicorn main:app --bind 0.0.0.0:$PORT" # <-- פקודת ההרצה (בהנחה שהאובייקט ב-main.py נקרא app)
+    healthCheck:
+      path: / # <-- חיוני כדי למנוע "הירדמות"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.4 # ודא שהגרסה תואמת
+      # מומלץ להעביר את המשתנים הרגישים לקובץ סודות (Secret File)
+      - fromSecretFile:
+          name: save-me-bot-secrets # <-- החלף בשם קובץ הסודות שלך
+          path: .env
