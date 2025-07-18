@@ -1,4 +1,6 @@
 import sys
+sys.path.insert(0, './database')
+import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import os
@@ -16,7 +18,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database.database_manager import Database
+from database_manager import Database
 from config import Config
 
 # הגדרת לוגים
