@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database.database_manager import Database
+from database_manager import Database
 from config import Config
 
 # הגדרת לוגים
