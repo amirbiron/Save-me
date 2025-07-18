@@ -652,6 +652,13 @@ def main() -> None:
     # חיפוש
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
     
+    # Set the webhook
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get('PORT', 8443)),
+        url_path=os.environ.get('BOT_TOKEN'),
+        webhook_url=f"{os.environ.get('WEBHOOK_URL')}/{os.environ.get('BOT_TOKEN')}"
+    )
     # הפעלת הבוט
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
