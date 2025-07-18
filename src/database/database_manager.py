@@ -357,26 +357,26 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # סה"כ פריטים
+                # סה""" פריטים
                 cursor.execute('SELECT COUNT(*) FROM saved_items WHERE user_id = ?', (user_id,))
                 total_items = cursor.fetchone()[0]
-                
+
                 # פריטים קבועים
                 cursor.execute('SELECT COUNT(*) FROM saved_items WHERE user_id = ? AND is_pinned = 1', (user_id,))
                 pinned_items = cursor.fetchone()[0]
-                
-                # סה"כ קטגוריות
+
+                # סה""" קטגוריות
                 cursor.execute('SELECT COUNT(DISTINCT category) FROM saved_items WHERE user_id = ?', (user_id,))
                 total_categories = cursor.fetchone()[0]
-                
+
                 # תזכורות פעילות
                 cursor.execute('SELECT COUNT(*) FROM saved_items WHERE user_id = ? AND reminder_at IS NOT NULL', (user_id,))
                 active_reminders = cursor.fetchone()[0]
-                
+
                 # פריטים עם הערות
                 cursor.execute('SELECT COUNT(*) FROM saved_items WHERE user_id = ? AND note != ""', (user_id,))
                 items_with_notes = cursor.fetchone()[0]
-                
+
                 return {
                     'total_items': total_items,
                     'pinned_items': pinned_items,
@@ -384,47 +384,47 @@ class Database:
                     'active_reminders': active_reminders,
                     'items_with_notes': items_with_notes
                 }
-                
+
         except Exception as e:
             logger.error(f"Error getting user stats: {e}")
             return {}
-    
+
     def export_user_data(self, user_id: int) -> List[Dict[str, Any]]:
         """ייצוא נתוני משתמש"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 cursor.execute('''
                     SELECT * FROM saved_items 
                     WHERE user_id = ?
                     ORDER BY category, created_at
                 ''', (user_id,))
-                
+
                 return [dict(row) for row in cursor.fetchall()]
-                
+
         except Exception as e:
             logger.error(f"Error exporting user data: {e}")
             return []
-    
+
     def cleanup_old_reminders(self, days_old: int = 7) -> int:
         """ניקוי תזכורות ישנות"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_date = datetime.now() - timedelta(days=days_old)
-                
+
                 cursor.execute('''
                     UPDATE saved_items 
                     SET reminder_at = NULL 
                     WHERE reminder_at IS NOT NULL AND reminder_at < ?
                 ''', (cutoff_date.isoformat(),))
-                
+
                 conn.commit()
                 return cursor.rowcount
-                
+
         except Exception as e:
             logger.error(f"Error cleaning up old reminders: {e}")
             return 0
