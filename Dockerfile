@@ -1,35 +1,17 @@
-# שימוש בתמונת Python רשמית
+# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
-# הגדרת תיקיית עבודה
+# Set the working directory in the container
 WORKDIR /app
 
-# העתקת קבצי requirements
+# Copy the dependencies file to the working directory
 COPY requirements.txt .
 
-# התקנת תלויות
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# יצירת תיקייה למסד הנתונים
-RUN mkdir -p /app/data
-
-# העתקת קבצי הפרויקט
+# Copy the rest of the application's code to the working directory
 COPY . .
 
-# הגדרת הרשאות
-RUN chmod +x main.py
-
-# יצירת משתמש לא-root לאבטחה
-RUN useradd -m -u 1000 botuser && \
-    chown -R botuser:botuser /app
-USER botuser
-
-# הגדרת משתני סביבה
-ENV PYTHONPATH=/app
-ENV DATABASE_PATH=/app/data/save_me_bot.db
-
-# פתיחת פורט
-EXPOSE 8443
-
-# הרצת הבוט
-CMD ["python", "main.py"]
+# IMPORTANT: Run the app on the port specified by Render's $PORT environment variable
+CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:$PORT"]
