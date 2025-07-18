@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import os
 import logging
 from datetime import datetime, timedelta
@@ -13,7 +16,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database_manager import Database
+from database.database_manager import Database
 from config import Config
 
 # הגדרת לוגים
