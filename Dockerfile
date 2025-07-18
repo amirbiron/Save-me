@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # IMPORTANT: Run the app on the port specified by Render's $PORT environment variable
-CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:$PORT"]
+CMD gunicorn main:app --bind 0.0.0.0:$PORT
