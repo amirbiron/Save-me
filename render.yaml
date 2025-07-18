@@ -1,16 +1,27 @@
 services:
   - type: web
     name: save-me-bot
-    env: python # <-- השינוי המרכזי: חזרה לסביבת פייתון
+    env: docker
     plan: free
-    buildCommand: "pip install -r requirements.txt" # <-- פקודת התקנת הספריות
-    startCommand: "gunicorn main:app --bind 0.0.0.0:$PORT" # <-- פקודת ההרצה (בהנחה שהאובייקט ב-main.py נקרא app)
+    
+    # CRITICAL: Tells Render where to find the Dockerfile
+    dockerfilePath: ./Dockerfile
+    
     healthCheck:
-      path: / # <-- חיוני כדי למנוע "הירדמות"
+      # CRITICAL: Keeps your free service alive
+      path: /
+
+    # Your environment variables. Render will handle the PORT automatically.
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.4 # ודא שהגרסה תואמת
-      # מומלץ להעביר את המשתנים הרגישים לקובץ סודות (Secret File)
-      - fromSecretFile:
-          name: save-me-bot-secrets # <-- החלף בשם קובץ הסודות שלך
-          path: .env
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        value: https://save-me-bot.onrender.com
+      - key: DATABASE_PATH
+        value: /app/data/save_me_bot.db
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MAX_REMINDER_HOURS
+        value: 168
+      - key: MIN_REMINDER_HOURS
+        value: 1
