@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database.database_manager import Database
+from database_manager import Database
 from web_app import WebApp
 from config import Config
 
