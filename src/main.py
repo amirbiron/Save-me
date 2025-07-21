@@ -238,47 +238,54 @@ class SaveMeBot:
         await query.edit_message_text("✅ נשמר בהצלחה!")
         
         # הצגת הפריט עם כפתורי פעולה
-        await self.show_item_with_actions(query, item_id)
+        await self.show_item_with_actions(query, context, item_id)
 
-    async def show_item_with_actions(self, query_or_update, item_id: int) -> None:
-        """הצגת פריט עם כפתורי פעולה"""
+    async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int) -> None:
+        """הצגת פריט עם כפתורי פעולה, כאשר התוכן נשלח בהודעה נפרדת."""
         item = self.db.get_item(item_id)
         if not item:
+            # אם הפריט נמחק, נסיר את ההודעה הישנה אם אפשר
+            if hasattr(update_or_query, 'edit_message_text'):
+                await update_or_query.edit_message_text("הפריט נמחק.")
             return
-        
-        # הכנת התוכן להצגה
-        display_text = f"📁 {item['category']} | 📝 {item['subject']}\n"
+
+        # --- הודעת ניהול (מטא-דאטה וכפתורים) ---
+        metadata_text = f"📁 **קטגוריה:** {item['category']}\n📝 **נושא:** {item['subject']}"
         if item['note']:
-            display_text += f"🗒️ {item['note']}\n"
-        display_text += f"⏰ {item['created_at']}\n\n"
-        
-        # הוספת תוכן הפריט
-        if item['content_type'] == 'text':
-            display_text += item['content']
-        elif item['caption']:
-            display_text += f"📎 {item['caption']}"
-        
-        # כפתורי פעולה
+            metadata_text += f"\n\n🗒️ **הערה:** {item['note']}"
+
         pin_text = "📌 בטל קיבוע" if item['is_pinned'] else "📌 קבע"
         note_text = "✏️ ערוך הערה" if item['note'] else "📝 הוסף הערה"
         
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
             [InlineKeyboardButton("🕰️ תזכורת", callback_data=f"remind_{item_id}")],
-            [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
             [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
         ]
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # שלח או ערוך את הודעת הניהול
+        if hasattr(update_or_query, 'edit_message_text'):
+            await update_or_query.edit_message_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update_or_query.message.reply_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+        # --- הודעת תוכן (התוכן הנקי) ---
+        chat_id = update_or_query.effective_chat.id
+        content_type = item['content_type']
         
-        try:
-            if hasattr(query_or_update, 'edit_message_text'):
-                await query_or_update.edit_message_text(display_text, reply_markup=reply_markup)
-            else:
-                await query_or_update.message.reply_text(display_text, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Error showing item: {e}")
+        # שלח את התוכן הנקי בהודעה חדשה
+        if content_type == 'text':
+            await context.bot.send_message(chat_id=chat_id, text=item['content'])
+        elif content_type == 'photo':
+            await context.bot.send_photo(chat_id=chat_id, photo=item['file_id'], caption=item.get('caption', ''))
+        elif content_type == 'document':
+            await context.bot.send_document(chat_id=chat_id, document=item['file_id'], caption=item.get('caption', ''))
+        elif content_type == 'video':
+            await context.bot.send_video(chat_id=chat_id, video=item['file_id'], caption=item.get('caption', ''))
+        elif content_type == 'voice':
+            await context.bot.send_voice(chat_id=chat_id, voice=item['file_id'], caption=item.get('caption', ''))
 
     async def handle_item_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בפעולות על פריטים"""
@@ -291,7 +298,7 @@ class SaveMeBot:
         
         if action == "pin":
             self.db.toggle_pin(item_id)
-            await self.show_item_with_actions(query, item_id)
+            await self.show_item_with_actions(query, context, item_id)
             
         elif action == "remind":
             keyboard = [
@@ -341,7 +348,7 @@ class SaveMeBot:
             )
             
             await query.edit_message_text(f"✅ תזכורת נקבעה לעוד {hours} שעות")
-            await self.show_item_with_actions(query, item_id)
+            await self.show_item_with_actions(query, context, item_id)
             
         elif action == "customremind":
             await query.edit_message_text("הקלד מספר שעות (1-168):")
@@ -349,7 +356,7 @@ class SaveMeBot:
             return WAITING_REMINDER
             
         elif action == "back":
-            await self.show_item_with_actions(query, item_id)
+            await self.show_item_with_actions(query, context, item_id)
             
         elif action == "delcontent":
             self.db.delete_item(item_id)
@@ -358,7 +365,7 @@ class SaveMeBot:
         elif action == "delnote":
             self.db.delete_note(item_id)
             await query.edit_message_text("✅ ההערה נמחקה")
-            await self.show_item_with_actions(query, item_id)
+            await self.show_item_with_actions(query, context, item_id)
         
         return ConversationHandler.END
 
@@ -403,7 +410,7 @@ class SaveMeBot:
         
         del context.user_data['editing_item']
         await update.message.reply_text("✅ התוכן עודכן בהצלחה!")
-        await self.show_item_with_actions(update, item_id)
+        await self.show_item_with_actions(update, context, item_id)
         return ConversationHandler.END
 
     async def handle_edit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -414,7 +421,7 @@ class SaveMeBot:
         self.db.update_note(item_id, note)
         del context.user_data['editing_note']
         await update.message.reply_text("✅ ההערה עודכנה בהצלחה!")
-        await self.show_item_with_actions(update, item_id)
+        await self.show_item_with_actions(update, context, item_id)
         return ConversationHandler.END
 
     async def handle_custom_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -438,7 +445,7 @@ class SaveMeBot:
         
         del context.user_data['custom_reminder']
         await update.message.reply_text(f"✅ תזכורת נקבעה לעוד {hours} שעות")
-        await self.show_item_with_actions(update, item_id)
+        await self.show_item_with_actions(update, context, item_id)
         return ConversationHandler.END
 
     async def search_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -479,7 +486,7 @@ class SaveMeBot:
         query = update.callback_query
         await query.answer()
         item_id = int(query.data[5:])
-        await self.show_item_with_actions(query, item_id)
+        await self.show_item_with_actions(query, context, item_id)
 
     async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
