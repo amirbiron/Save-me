@@ -270,7 +270,7 @@ class SaveMeBot:
             await update_or_query.message.reply_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
         # --- הודעת תוכן (התוכן הנקי) ---
-        chat_id = update_or_query.effective_chat.id
+        chat_id = update_or_query.message.chat.id
         content_type = item.get('content_type', 'N/A')
         
         # --- שורת אבחון ---
