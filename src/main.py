@@ -11,7 +11,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict  # Added for global error handling
+from telegram.error import Conflict, NetworkError, Unauthorized, TimedOut
 
 # Note: The original 'database_model.py' has been renamed to 'database_manager.py'
 # and placed inside the 'database' directory to work as a module.
@@ -38,12 +38,22 @@ logger = logging.getLogger(__name__)
 
 # ✨ Global Error Handler ✨
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log Errors caused by Updates."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    """Log Errors and handle specific network issues."""
+    error = context.error
+    logger.error("Exception while handling an update:", exc_info=error)
 
-    # Special handling for Conflict error to avoid spamming logs during restarts
-    if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected, likely due to another instance running. Ignoring.")
+    # Handle specific, common exceptions
+    if isinstance(error, Conflict):
+        logger.warning("Conflict error detected, likely due to another instance running.")
+    elif isinstance(error, TimedOut):
+        logger.warning("Timeout error. The bot will automatically retry.")
+    elif isinstance(error, NetworkError):
+        logger.warning("Network error. Could be a temporary issue with connection to Telegram.")
+    elif isinstance(error, Unauthorized):
+        if update and hasattr(update, 'effective_user') and update.effective_user:
+            logger.warning(f"Unauthorized: The bot was blocked by the user {update.effective_user.id}.")
+        else:
+            logger.warning("Unauthorized: Bot may be kicked from a group or channel.")
 
 # Conversation states
 (WAITING_CONTENT, WAITING_CATEGORY, WAITING_SUBJECT, WAITING_REMINDER,
@@ -269,6 +279,7 @@ class SaveMeBot:
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
             [InlineKeyboardButton("🕰️ תזכורת", callback_data=f"remind_{item_id}")],
+            [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
             [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
         ]
