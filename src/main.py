@@ -241,10 +241,9 @@ class SaveMeBot:
         await self.show_item_with_actions(query, context, item_id)
 
     async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int) -> None:
-        """הצגת פריט עם כפתורי פעולה, כאשר התוכן נשלח בהודעה נפרדת."""
+        """הצגת פריט עם כפתורי פעולה, כולל הודעת אבחון."""
         item = self.db.get_item(item_id)
         if not item:
-            # אם הפריט נמחק, נסיר את ההודעה הישנה אם אפשר
             if hasattr(update_or_query, 'edit_message_text'):
                 await update_or_query.edit_message_text("הפריט נמחק.")
             return
@@ -265,7 +264,6 @@ class SaveMeBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # שלח או ערוך את הודעת הניהול
         if hasattr(update_or_query, 'edit_message_text'):
             await update_or_query.edit_message_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
         else:
@@ -273,9 +271,12 @@ class SaveMeBot:
 
         # --- הודעת תוכן (התוכן הנקי) ---
         chat_id = update_or_query.effective_chat.id
-        content_type = item['content_type']
+        content_type = item.get('content_type', 'N/A')
         
-        # שלח את התוכן הנקי בהודעה חדשה
+        # --- שורת אבחון ---
+        await context.bot.send_message(chat_id=chat_id, text=f"--- DEBUG INFO ---\nContent Type: {content_type}\nHas Content: {'yes' if item.get('content') else 'no'}\nFile ID: {item.get('file_id', 'none')}")
+        # --------------------
+
         if content_type == 'text':
             await context.bot.send_message(chat_id=chat_id, text=item['content'])
         elif content_type == 'photo':
