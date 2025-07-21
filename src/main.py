@@ -507,12 +507,6 @@ class SaveMeBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("הגדרות:", reply_markup=reply_markup)
 
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Displays help information."""
-        # Intentional error for testing
-        x = 1 / 0  # זה יגרום לשגיאת ZeroDivisionError
-        await update.message.reply_text('This is the help command.')
-
 # --- Main Execution ---
 def main() -> None:
     """Start the bot and the keep-alive server."""
