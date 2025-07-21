@@ -13,8 +13,6 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
 
-# Note: The original 'database_model.py' has been renamed to 'database_manager.py'
-# and placed inside the 'database' directory to work as a module.
 from database.database_manager import Database
 
 # --- Flask App for Render Health Check ---
@@ -36,13 +34,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Conversation states
+(SELECTING_ACTION, ADD_CONTENT, ADD_CATEGORY, ADD_SUBJECT,
+ AWAIT_NOTE, AWAIT_EDIT, AWAIT_REMINDER, AWAIT_SEARCH) = range(8)
+# -------------------------
+
 # ✨ Global Error Handler ✨
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors and handle specific network issues."""
     error = context.error
     logger.error("Exception while handling an update:", exc_info=error)
 
-    # Handle specific, common exceptions
     if isinstance(error, Conflict):
         logger.warning("Conflict error detected, likely due to another instance running.")
     elif isinstance(error, TimedOut):
@@ -50,199 +52,100 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     elif isinstance(error, NetworkError):
         logger.warning("Network error. Could be a temporary issue with connection to Telegram.")
     elif isinstance(error, Forbidden):
-        if update and update.effective_user:
+        if update and hasattr(update, 'effective_user') and update.effective_user:
             logger.warning(f"Forbidden: The bot was blocked by the user {update.effective_user.id}.")
         else:
             logger.warning("Forbidden: Bot may be kicked from a group or channel.")
 
-# Conversation states
-(WAITING_CONTENT, WAITING_CATEGORY, WAITING_SUBJECT, WAITING_REMINDER,
- WAITING_EDIT, WAITING_NOTE) = range(6)
-# -------------------------
 
 class SaveMeBot:
     def __init__(self):
-        # Using DATABASE_URL from environment variable for Render's persistent disk
         db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
         self.pending_items: Dict[int, Dict[str, Any]] = {}
 
-    # --- Paste ALL the methods from the original main_bot.py's SaveMeBot class here ---
-    # For example: start, handle_main_menu, receive_content, etc.
-    # Make sure all methods from the original SaveMeBot class are copied here.
-    # The following are copies from the file provided by the user.
-
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """הודעת פתיחה ותפריט ראשי"""
-        user_id = update.effective_user.id
-        username = update.effective_user.first_name or "משתמש"
-
-        welcome_text = f"""
-שלום {username}! 👋
-ברוך הבא לבוט "שמור לי" 📝
-
-🎯 **מטרה:** לעזור לך לשמור במהירות הודעות, רעיונות וקבצים, למיין אותם ולחזור אליהם בקלות.
-
-בחר פעולה:
-"""
-
+    # --- Main Menu and Start ---
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Sends a welcome message and the main menu."""
+        username = update.effective_user.first_name
+        welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
+        
         keyboard = [
             [KeyboardButton("➕ הוסף תוכן")],
-            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג לפי קטגוריה")],
+            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
             [KeyboardButton("⚙️ הגדרות")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-
-    async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בתפריט הראשי"""
-        text = update.message.text
-        user_id = update.effective_user.id
         
-        if text == "➕ הוסף תוכן":
-            await update.message.reply_text("שלח לי את התוכן לשמירה (טקסט, קובץ, תמונה או Reply על הודעה):")
-            return WAITING_CONTENT
-            
-        elif text == "🔍 חיפוש":
-            await self.search_prompt(update, context)
-            
-        elif text == "📚 הצג לפי קטגוריה":
-            await self.show_categories(update, context)
-            
-        elif text == "⚙️ הגדרות":
-            await self.show_settings(update, context)
-            
-        return ConversationHandler.END
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        return SELECTING_ACTION
 
+    # --- Handlers for Main Menu Buttons ---
+    async def ask_for_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        await update.message.reply_text("שלח לי את התוכן לשמירה (טקסט, קובץ, תמונה וכו'):" )
+        return ADD_CONTENT
+
+    async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        await update.message.reply_text("מה לחפש?")
+        return AWAIT_SEARCH
+
+    # --- Conversation Flow for Adding an Item ---
     async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """קבלת תוכן לשמירה"""
         user_id = update.effective_user.id
         message = update.message
-        
-        # שמירת התוכן זמנית
-        content_data = {
-            'user_id': user_id,
-            'timestamp': datetime.now()
-        }
-        
-        if message.text:
-            content_data['type'] = 'text'
-            content_data['content'] = message.text
-        elif message.photo:
-            content_data['type'] = 'photo'
-            content_data['file_id'] = message.photo[-1].file_id
-            content_data['caption'] = message.caption or ""
-        elif message.document:
-            content_data['type'] = 'document'
-            content_data['file_id'] = message.document.file_id
-            content_data['file_name'] = message.document.file_name
-            content_data['caption'] = message.caption or ""
-        elif message.voice:
-            content_data['type'] = 'voice'
-            content_data['file_id'] = message.voice.file_id
-            content_data['caption'] = message.caption or ""
-        elif message.video:
-            content_data['type'] = 'video'
-            content_data['file_id'] = message.video.file_id
-            content_data['caption'] = message.caption or ""
-        else:
-            await update.message.reply_text("סוג קובץ לא נתמך. אנא שלח טקסט, תמונה, מסמך או הודעה קולית.")
-            return WAITING_CONTENT
-        
-        self.pending_items[user_id] = content_data
-        
-        # הצגת קטגוריות
-        await self.show_category_selection(update, context)
-        return WAITING_CATEGORY
+        content_data = {'user_id': user_id}
 
-    async def show_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """הצגת בחירת קטגוריה"""
+        if message.text:
+            content_data.update({'type': 'text', 'content': message.text})
+        elif message.photo:
+            content_data.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ""})
+        elif message.document:
+            content_data.update({'type': 'document', 'file_id': message.document.file_id, 'file_name': message.document.file_name, 'caption': message.caption or ""})
+        elif message.video:
+            content_data.update({'type': 'video', 'file_id': message.video.file_id, 'caption': message.caption or ""})
+        elif message.voice:
+            content_data.update({'type': 'voice', 'file_id': message.voice.file_id, 'caption': message.caption or ""})
+        else:
+            await update.message.reply_text("סוג תוכן לא נתמך. נסה שוב.")
+            return ADD_CONTENT
+        
+        context.user_data['new_item'] = content_data
+        await self.show_category_selection(update, context)
+        return ADD_CATEGORY
+
+    async def show_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         categories = self.db.get_user_categories(user_id)
-        
-        keyboard = []
-        for category in categories:
-            keyboard.append([InlineKeyboardButton(category, callback_data=f"cat_{category}")])
-        
-        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="new_category")])
-        
+        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("בחר קטגוריה:", reply_markup=reply_markup)
 
-    async def handle_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בבחירת קטגוריה"""
-        query = update.callback_query
-        await query.answer()
-        
+    async def receive_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        data = query.data
-        
-        if data == "new_category":
-            await query.edit_message_text("הקלד שם לקטגוריה החדשה:")
-            return WAITING_CATEGORY
-        elif data.startswith("cat_"):
-            category = data[4:]  # הסרת "cat_"
-            self.pending_items[user_id]['category'] = category
-            await query.edit_message_text(f"נבחרה קטגוריה: {category}\n\nהקלד נושא לפריט:")
-            return WAITING_SUBJECT
-        
-        return ConversationHandler.END
+        category_name = ""
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            if query.data == 'cat_new':
+                await query.edit_message_text("הקלד שם לקטגוריה החדשה:")
+                return ADD_CATEGORY
+            category_name = query.data.replace('cat_', '')
+            await query.edit_message_text(f"קטגוריה: {category_name}\n\nהקלד נושא לפריט:")
+        else:
+            category_name = update.message.text.strip()
+            await update.message.reply_text(f"קטגוריה: {category_name}\n\nהקלד נושא לפריט:")
 
-    async def receive_new_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """קבלת שם קטגוריה חדשה"""
-        user_id = update.effective_user.id
-        category = update.message.text.strip()
-        
-        if not category:
-            await update.message.reply_text("שם הקטגוריה לא יכול להיות ריק. נסה שוב:")
-            return WAITING_CATEGORY
-        
-        self.pending_items[user_id]['category'] = category
-        await update.message.reply_text(f"נוצרה קטגוריה: {category}\n\nהקלד נושא לפריט:")
-        return WAITING_SUBJECT
+        context.user_data['new_item']['category'] = category_name
+        return ADD_SUBJECT
 
-    async def receive_subject(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """קבלת נושא הפריט"""
-        user_id = update.effective_user.id
+    async def receive_subject_and_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         subject = update.message.text.strip()
+        context.user_data['new_item']['subject'] = subject
         
-        if not subject:
-            await update.message.reply_text("הנושא לא יכול להיות ריק. נסה שוב:")
-            return WAITING_SUBJECT
-        
-        self.pending_items[user_id]['subject'] = subject
-        
-        # הצגת אישור שמירה
-        keyboard = [[InlineKeyboardButton("✅ שמור", callback_data="confirm_save")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"**פרטי הפריט:**\n"
-            f"📁 קטגוריה: {self.pending_items[user_id]['category']}\n"
-            f"📝 נושא: {subject}\n\n"
-            f"לחץ לשמירה:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return ConversationHandler.END
-
-    async def confirm_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """אישור שמירת הפריט"""
-        query = update.callback_query
-        await query.answer()
-        
-        user_id = update.effective_user.id
-        
-        if user_id not in self.pending_items:
-            await query.edit_message_text("שגיאה: לא נמצא פריט לשמירה.")
-            return
-        
-        item_data = self.pending_items[user_id]
-        
-        # שמירה במסד הנתונים
+        item_data = context.user_data['new_item']
         item_id = self.db.save_item(
-            user_id=user_id,
+            user_id=item_data['user_id'],
             category=item_data['category'],
             subject=item_data['subject'],
             content_type=item_data['type'],
@@ -252,23 +155,19 @@ class SaveMeBot:
             caption=item_data.get('caption', '')
         )
         
-        # ניקוי הפריט הזמני
-        del self.pending_items[user_id]
-        
-        await query.edit_message_text("✅ נשמר בהצלחה!")
-        
-        # הצגת הפריט עם כפתורי פעולה
-        await self.show_item_with_actions(query, context, item_id)
+        await update.message.reply_text("✅ נשמר בהצלחה!")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['new_item']
+        return ConversationHandler.END
 
-    async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int) -> None:
-        """הצגת פריט עם כפתורי פעולה, כולל הודעת אבחון."""
+    # --- Displaying Items and Categories ---
+    async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
         item = self.db.get_item(item_id)
         if not item:
             if hasattr(update_or_query, 'edit_message_text'):
                 await update_or_query.edit_message_text("הפריט נמחק.")
             return
 
-        # --- הודעת ניהול (מטא-דאטה וכפתורים) ---
         metadata_text = f"📁 **קטגוריה:** {item['category']}\n📝 **נושא:** {item['subject']}"
         if item['note']:
             metadata_text += f"\n\n🗒️ **הערה:** {item['note']}"
@@ -278,7 +177,6 @@ class SaveMeBot:
         
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
-            [InlineKeyboardButton("🕰️ תזכורת", callback_data=f"remind_{item_id}")],
             [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
             [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
@@ -287,17 +185,14 @@ class SaveMeBot:
 
         if hasattr(update_or_query, 'edit_message_text'):
             await update_or_query.edit_message_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-        else:
+        elif hasattr(update_or_query, 'message'):
             await update_or_query.message.reply_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        else: # Fallback for other update types
+            await context.bot.send_message(chat_id=update_or_query.effective_chat.id, text=metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-        # --- הודעת תוכן (התוכן הנקי) ---
-        chat_id = update_or_query.message.chat.id
+        chat_id = update_or_query.effective_chat.id
         content_type = item.get('content_type', 'N/A')
         
-        # --- שורת אבחון ---
-        await context.bot.send_message(chat_id=chat_id, text=f"--- DEBUG INFO ---\nContent Type: {content_type}\nHas Content: {'yes' if item.get('content') else 'no'}\nFile ID: {item.get('file_id', 'none')}")
-        # --------------------
-
         if content_type == 'text':
             await context.bot.send_message(chat_id=chat_id, text=item['content'])
         elif content_type == 'photo':
@@ -309,181 +204,7 @@ class SaveMeBot:
         elif content_type == 'voice':
             await context.bot.send_voice(chat_id=chat_id, voice=item['file_id'], caption=item.get('caption', ''))
 
-    async def handle_item_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בפעולות על פריטים"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        action, item_id = data.split('_', 1)
-        item_id = int(item_id)
-        
-        if action == "pin":
-            self.db.toggle_pin(item_id)
-            await self.show_item_with_actions(query, context, item_id)
-            
-        elif action == "remind":
-            keyboard = [
-                [InlineKeyboardButton("1 שעה", callback_data=f"setremind_{item_id}_1")],
-                [InlineKeyboardButton("3 שעות", callback_data=f"setremind_{item_id}_3")],
-                [InlineKeyboardButton("24 שעות", callback_data=f"setremind_{item_id}_24")],
-                [InlineKeyboardButton("שעות מותאמות", callback_data=f"customremind_{item_id}")],
-                [InlineKeyboardButton("❌ בטל", callback_data=f"back_{item_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("בעוד כמה שעות להזכיר?", reply_markup=reply_markup)
-            
-        elif action == "edit":
-            await query.edit_message_text("שלח את התוכן החדש:")
-            context.user_data['editing_item'] = item_id
-            return WAITING_EDIT
-            
-        elif action == "note":
-            item = self.db.get_item(item_id)
-            if item['note']:
-                await query.edit_message_text(f"ההערה הנוכחית: {item['note']}\n\nהקלד הערה חדשה:")
-            else:
-                await query.edit_message_text("הקלד הערה לפריט:")
-            context.user_data['editing_note'] = item_id
-            return WAITING_NOTE
-            
-        elif action == "delete":
-            keyboard = [
-                [InlineKeyboardButton("🗑️ מחק תוכן", callback_data=f"delcontent_{item_id}")],
-                [InlineKeyboardButton("🗑️ מחק הערה", callback_data=f"delnote_{item_id}")],
-                [InlineKeyboardButton("❌ בטל", callback_data=f"back_{item_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("מה למחוק?", reply_markup=reply_markup)
-            
-        elif action == "setremind":
-            _, hours = data.split('_', 2)[1:]
-            hours = int(hours)
-            reminder_time = datetime.now() + timedelta(hours=hours)
-            self.db.set_reminder(item_id, reminder_time)
-            
-            # הוספת משימה לתזכורת
-            context.job_queue.run_once(
-                self.send_reminder, 
-                when=reminder_time,
-                data={'item_id': item_id, 'user_id': query.from_user.id}
-            )
-            
-            await query.edit_message_text(f"✅ תזכורת נקבעה לעוד {hours} שעות")
-            await self.show_item_with_actions(query, context, item_id)
-            
-        elif action == "customremind":
-            await query.edit_message_text("הקלד מספר שעות (1-168):")
-            context.user_data['custom_reminder'] = item_id
-            return WAITING_REMINDER
-            
-        elif action == "back":
-            await self.show_item_with_actions(query, context, item_id)
-            
-        elif action == "delcontent":
-            self.db.delete_item(item_id)
-            await query.edit_message_text("✅ הפריט נמחק")
-            
-        elif action == "delnote":
-            self.db.delete_note(item_id)
-            await query.edit_message_text("✅ ההערה נמחקה")
-            await self.show_item_with_actions(query, context, item_id)
-        
-        return ConversationHandler.END
-
-    async def send_reminder(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """שליחת תזכורת"""
-        job_data = context.job.data
-        item_id = job_data['item_id']
-        user_id = job_data['user_id']
-        
-        item = self.db.get_item(item_id)
-        if not item:
-            return
-        
-        # שליחת הפריט מחדש
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"🔔 **תזכורת!**\n\n{item['category']} | {item['subject']}\n\n{item['content'] or item['caption']}"
-        )
-        
-        self.db.clear_reminder(item_id)
-
-    async def handle_edit_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בעריכת תוכן פריט"""
-        user_id = update.effective_user.id
-        message = update.message
-        item_id = context.user_data.get('editing_item')
-        
-        if not item_id:
-            await update.message.reply_text("שגיאה: לא נמצא פריט לעריכה")
-            return ConversationHandler.END
-        
-        # עדכון התוכן בהתאם לסוג ההודעה
-        if message.text:
-            self.db.update_content(item_id, 'text', content=message.text)
-        elif message.photo:
-            self.db.update_content(
-                item_id, 'photo', 
-                file_id=message.photo[-1].file_id, 
-                caption=message.caption or ""
-            )
-        # ... Add other content types if necessary
-        
-        del context.user_data['editing_item']
-        await update.message.reply_text("✅ התוכן עודכן בהצלחה!")
-        await self.show_item_with_actions(update, context, item_id)
-        return ConversationHandler.END
-
-    async def handle_edit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בעריכת הערה"""
-        note = update.message.text.strip()
-        item_id = context.user_data.get('editing_note')
-        if not item_id: return ConversationHandler.END
-        self.db.update_note(item_id, note)
-        del context.user_data['editing_note']
-        await update.message.reply_text("✅ ההערה עודכנה בהצלחה!")
-        await self.show_item_with_actions(update, context, item_id)
-        return ConversationHandler.END
-
-    async def handle_custom_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """טיפול בתזכורת מותאמת"""
-        text = update.message.text.strip()
-        item_id = context.user_data.get('custom_reminder')
-        if not item_id: return ConversationHandler.END
-        
-        try:
-            hours = int(text)
-            if not (1 <= hours <= 168):
-                await update.message.reply_text("מספר השעות צריך להיות בין 1 ל-168.")
-                return WAITING_REMINDER
-        except ValueError:
-            await update.message.reply_text("אנא הקלד מספר תקין של שעות.")
-            return WAITING_REMINDER
-
-        reminder_time = datetime.now() + timedelta(hours=hours)
-        self.db.set_reminder(item_id, reminder_time)
-        context.job_queue.run_once(self.send_reminder, reminder_time, data={'item_id': item_id, 'user_id': update.effective_user.id})
-        
-        del context.user_data['custom_reminder']
-        await update.message.reply_text(f"✅ תזכורת נקבעה לעוד {hours} שעות")
-        await self.show_item_with_actions(update, context, item_id)
-        return ConversationHandler.END
-
-    async def search_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text("מה לחפש?")
-
-    async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        query = update.message.text.strip()
-        results = self.db.search_items(update.effective_user.id, query)
-        if not results:
-            await update.message.reply_text("לא נמצאו תוצאות.")
-            return
-        
-        keyboard = [[InlineKeyboardButton(f"{item['category']} | {item['subject']}", callback_data=f"show_{item['id']}")] for item in results[:10]]
-        await update.message.reply_text(f"נמצאו {len(results)} תוצאות:", reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         categories = self.db.get_user_categories(update.effective_user.id)
         if not categories:
             await update.message.reply_text("אין קטגוריות עדיין.")
@@ -492,90 +213,155 @@ class SaveMeBot:
         keyboard = [[InlineKeyboardButton(f"{cat} ({self.db.get_category_count(update.effective_user.id, cat)})", callback_data=f"showcat_{cat}")] for cat in categories]
         await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        category = query.data[8:]
+        category = query.data.replace('showcat_', '')
         items = self.db.get_category_items(update.effective_user.id, category)
         if not items:
             await query.edit_message_text("אין פריטים בקטגוריה זו.")
             return
         
-        keyboard = [[InlineKeyboardButton(f"{'📌 ' if item['is_pinned'] else ''}{item['subject']}", callback_data=f"show_{item['id']}")] for item in items]
+        keyboard = [[InlineKeyboardButton(f"{'📌 ' if item['is_pinned'] else ''}{item['subject']}", callback_data=f"showitem_{item['id']}")] for item in items]
         await query.edit_message_text(f"📁 {category}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def show_item_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # --- Search ---
+    async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.message.text.strip()
+        results = self.db.search_items(update.effective_user.id, query)
+        if not results:
+            await update.message.reply_text("לא נמצאו תוצאות.")
+            return ConversationHandler.END
+        
+        keyboard = [[InlineKeyboardButton(f"{item['category']} | {item['subject']}", callback_data=f"showitem_{item['id']}")] for item in results[:10]]
+        await update.message.reply_text(f"נמצאו {len(results)} תוצאות:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    # --- Callback Handlers for Item Actions ---
+    async def show_item_from_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        item_id = int(query.data[5:])
+        item_id = int(query.data.replace('showitem_', ''))
         await self.show_item_with_actions(query, context, item_id)
 
-    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        keyboard = [
-            [InlineKeyboardButton("📊 סטטיסטיקות", callback_data="stats")],
-            [InlineKeyboardButton("🔄 ייצוא נתונים", callback_data="export")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("הגדרות:", reply_markup=reply_markup)
+    async def toggle_pin_item(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        item_id = int(query.data.replace('pin_', ''))
+        self.db.toggle_pin(item_id)
+        await self.show_item_with_actions(query, context, item_id)
 
-# --- Main Execution ---
+    async def delete_item_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        item_id = int(query.data.replace('delete_', ''))
+        keyboard = [
+            [InlineKeyboardButton("✅ כן, מחק", callback_data=f"delconfirm_{item_id}")],
+            [InlineKeyboardButton("❌ לא", callback_data=f"showitem_{item_id}")]
+        ]
+        await query.edit_message_text("האם אתה בטוח שברצונך למחוק את הפריט?", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def delete_item_confirmed(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        item_id = int(query.data.replace('delconfirm_', ''))
+        self.db.delete_item(item_id)
+        await query.edit_message_text("✅ הפריט נמחק.")
+
+    # --- Placeholder for settings ---
+    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("אזור הגדרות (בבנייה).")
+
+    # --- Handlers for editing note and content ---
+    async def ask_for_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query
+        await query.answer()
+        item_id = int(query.data.replace('note_', ''))
+        context.user_data['item_to_edit'] = item_id
+        await query.edit_message_text("הקלד את ההערה החדשה:")
+        return AWAIT_NOTE
+
+    async def save_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        item_id = context.user_data['item_to_edit']
+        note = update.message.text
+        self.db.update_note(item_id, note)
+        await update.message.reply_text("✅ ההערה עודכנה.")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['item_to_edit']
+        return ConversationHandler.END
+
+    async def ask_for_edit_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query
+        await query.answer()
+        item_id = int(query.data.replace('edit_', ''))
+        context.user_data['item_to_edit'] = item_id
+        await query.edit_message_text("שלח את התוכן החדש:")
+        return AWAIT_EDIT
+
+    async def save_edited_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        item_id = context.user_data['item_to_edit']
+        message = update.message
+        # This is a simplified version; you can expand it like in receive_content
+        if message.text:
+            self.db.update_content(item_id, 'text', content=message.text)
+            await update.message.reply_text("✅ התוכן עודכן.")
+            await self.show_item_with_actions(update, context, item_id)
+            del context.user_data['item_to_edit']
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text("סוג תוכן לא נתמך לעריכה.")
+            return AWAIT_EDIT
+
+
 def main() -> None:
     """Start the bot and the keep-alive server."""
-    # Start Flask server in a background thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
-    # Get bot token from environment variable
     token = os.environ.get('BOT_TOKEN')
     if not token:
         logger.error("FATAL: BOT_TOKEN environment variable is not set.")
         return
 
-    # Create bot instance
     bot = SaveMeBot()
-
-    # Set up the application
     application = Application.builder().token(token).build()
-
-    # --- Register all handlers with priority groups ---
     application.add_error_handler(error_handler)
 
-    # Group 0: Conversation handlers (highest priority for messages)
+    # --- Main Conversation Handler ---
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.handle_main_menu)],
+        entry_points=[CommandHandler('start', bot.start)],
         states={
-            WAITING_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
-            WAITING_CATEGORY: [
-                CallbackQueryHandler(bot.handle_category_selection, pattern="^cat_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_new_category)
+            SELECTING_ACTION: [
+                MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
+                MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
+                MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
+                MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
             ],
-            WAITING_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject)],
-            WAITING_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.handle_edit_content)],
-            WAITING_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_edit_note)],
-            WAITING_REMINDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_custom_reminder)]
+            ADD_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
+            ADD_CATEGORY: [
+                CallbackQueryHandler(bot.receive_category, pattern="^cat_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)
+            ],
+            ADD_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
+            AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search)],
+            AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
+            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.save_edited_content)],
         },
-        fallbacks=[CommandHandler("start", bot.start)],
-        per_message=False
+        fallbacks=[CommandHandler('start', bot.start)],
+        per_message=False,
+        allow_reentry=True
     )
-    application.add_handler(conv_handler, group=0)
+    application.add_handler(conv_handler)
 
-    # Group 1: Other specific text commands from main menu
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.search_prompt), group=1)
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^📚 הצג לפי קטגוריה$'), bot.show_categories), group=1)
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings), group=1)
+    # --- Callback Handlers (outside conversation) ---
+    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"))
+    application.add_handler(CallbackQueryHandler(bot.show_item_from_button, pattern="^showitem_"))
+    application.add_handler(CallbackQueryHandler(bot.toggle_pin_item, pattern="^pin_"))
+    application.add_handler(CallbackQueryHandler(bot.delete_item_confirmation, pattern="^delete_"))
+    application.add_handler(CallbackQueryHandler(bot.delete_item_confirmed, pattern="^delconfirm_"))
+    application.add_handler(CallbackQueryHandler(bot.ask_for_note, pattern="^note_"))
+    application.add_handler(CallbackQueryHandler(bot.ask_for_edit_content, pattern="^edit_"))
 
-    # Group 2: Callback handlers for buttons
-    application.add_handler(CallbackQueryHandler(bot.confirm_save, pattern="^confirm_save"), group=2)
-    item_actions_pattern = "^(pin_|remind_|edit_|note_|delete_|setremind_|customremind_|back_|delcontent_|delnote_)"
-    application.add_handler(CallbackQueryHandler(bot.handle_item_actions, pattern=item_actions_pattern), group=2)
-    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"), group=2)
-    application.add_handler(CallbackQueryHandler(bot.show_item_callback, pattern="^show_"), group=2)
-    application.add_handler(CallbackQueryHandler(bot.handle_category_selection, pattern="^new_category"), group=2)
-
-    # Group 3: General text handler for search queries (lowest priority)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search), group=3)
-
-    # Run the bot
     logger.info("Bot is starting to poll...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
