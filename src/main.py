@@ -474,14 +474,35 @@ class SaveMeBot:
         await update.message.reply_text("מה לחפש?")
 
     async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        query = update.message.text.strip()
-        results = self.db.search_items(update.effective_user.id, query)
-        if not results:
-            await update.message.reply_text("לא נמצאו תוצאות.")
+        """טיפול בחיפוש"""
+        # בדיקה קריטית: ודא שהעדכון מכיל הודעה לפני שממשיכים
+        if not update.message:
+            logger.info("Update received without a message, ignoring in search handler.")
             return
-        
-        keyboard = [[InlineKeyboardButton(f"{item['category']} | {item['subject']}", callback_data=f"show_{item['id']}")] for item in results[:10]]
-        await update.message.reply_text(f"נמצאו {len(results)} תוצאות:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        user_id = update.effective_user.id
+        query = update.message.text.strip()
+
+        if not query:
+            await update.message.reply_text("הקלד מילת חיפוש")
+            return
+
+        results = self.db.search_items(user_id, query)
+
+        if not results:
+            await update.message.reply_text("לא נמצאו תוצאות")
+            return
+
+        keyboard = []
+        for i, item in enumerate(results[:10], 1):
+            button_text = f"{i}. {item['category']} | {item['subject']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"show_{item['id']}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"נמצאו {len(results)} תוצאות (מציג 10 ראשונות):",
+            reply_markup=reply_markup
+        )
     
     async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         categories = self.db.get_user_categories(update.effective_user.id)
