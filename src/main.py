@@ -11,6 +11,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
+from telegram.error import Conflict  # Added for global error handling
 
 # Note: The original 'database_model.py' has been renamed to 'database_manager.py'
 # and placed inside the 'database' directory to work as a module.
@@ -34,6 +35,15 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ✨ Global Error Handler ✨
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    # Special handling for Conflict error to avoid spamming logs during restarts
+    if isinstance(context.error, Conflict):
+        logger.warning("Conflict error detected, likely due to another instance running. Ignoring.")
 
 # Conversation states
 (WAITING_CONTENT, WAITING_CATEGORY, WAITING_SUBJECT, WAITING_REMINDER,
@@ -515,6 +525,7 @@ def main() -> None:
 
     # Set up the application
     application = Application.builder().token(token).build()
+    application.add_error_handler(error_handler)
 
     # --- Register all handlers from the original bot ---
     conv_handler = ConversationHandler(
