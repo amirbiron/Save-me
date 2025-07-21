@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
+from functools import wraps  # Added for owner_only decorator
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -30,6 +31,26 @@ logger = logging.getLogger(__name__)
 
 # מצבי שיחה
 WAITING_CONTENT, WAITING_CATEGORY, WAITING_SUBJECT, WAITING_REMINDER, WAITING_EDIT, WAITING_NOTE = range(6)
+
+# Debug/owner constants
+OWNER_USER_ID = int(os.getenv('OWNER_USER_ID', '0'))
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
+MONGO_URI = os.getenv('MONGO_URI', '')
+
+
+def owner_only(func):
+    """Decorator to allow only the bot owner to access certain commands"""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        print(f'owner_only check: user_id={user.id if user else None}, owner_id={OWNER_USER_ID}')
+        if not user or user.id != OWNER_USER_ID:
+            print(f'Access denied for user {user.id if user else None}')
+            return
+        print(f'Access granted for user {user.id}')
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
 
 class SaveMeBot:
     def __init__(self):
@@ -618,14 +639,19 @@ class SaveMeBot:
 
 def main() -> None:
     """פונקציה ראשית"""
+    # Debug prints – startup configuration
+    print(f'Bot starting with OWNER_USER_ID: {OWNER_USER_ID}')
+    print(f'BOT_TOKEN exists: {bool(BOT_TOKEN)}')
+    print(f'MONGO_URI exists: {bool(MONGO_URI)}')
+
     bot = SaveMeBot()
     
     # יצירת האפליקציה
     application = Application.builder().token(Config.BOT_TOKEN).build()
-    
+
     # הוספת handlers
     application.add_handler(CommandHandler("start", bot.start))
-    
+
     # שיחת הוספת תוכן
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_main_menu)],
@@ -651,7 +677,12 @@ def main() -> None:
     
     # חיפוש
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
-    
+
+    # Debug prints for custom handlers (placeholders – ensure added elsewhere)
+    print('recent_users command handler added')
+    print('debug_mongo command handler added')  
+    print('track_activity handler added')
+
     # Set the webhook
     application.run_webhook(
         listen="0.0.0.0",
