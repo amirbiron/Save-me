@@ -53,7 +53,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 class SaveMeBot:
     def __init__(self):
         # Using DATABASE_URL from environment variable for Render's persistent disk
-        db_path = os.environ.get('DATABASE_URL', 'save_me_bot.db')
+        db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
         self.pending_items: Dict[int, Dict[str, Any]] = {}
 
