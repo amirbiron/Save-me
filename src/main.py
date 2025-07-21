@@ -11,7 +11,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict, NetworkError, Unauthorized, TimedOut
+from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
 
 # Note: The original 'database_model.py' has been renamed to 'database_manager.py'
 # and placed inside the 'database' directory to work as a module.
@@ -49,11 +49,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.warning("Timeout error. The bot will automatically retry.")
     elif isinstance(error, NetworkError):
         logger.warning("Network error. Could be a temporary issue with connection to Telegram.")
-    elif isinstance(error, Unauthorized):
-        if update and hasattr(update, 'effective_user') and update.effective_user:
-            logger.warning(f"Unauthorized: The bot was blocked by the user {update.effective_user.id}.")
+    elif isinstance(error, Forbidden):
+        if update and update.effective_user:
+            logger.warning(f"Forbidden: The bot was blocked by the user {update.effective_user.id}.")
         else:
-            logger.warning("Unauthorized: Bot may be kicked from a group or channel.")
+            logger.warning("Forbidden: Bot may be kicked from a group or channel.")
 
 # Conversation states
 (WAITING_CONTENT, WAITING_CATEGORY, WAITING_SUBJECT, WAITING_REMINDER,
@@ -536,11 +536,13 @@ def main() -> None:
 
     # Set up the application
     application = Application.builder().token(token).build()
+
+    # --- Register all handlers with priority groups ---
     application.add_error_handler(error_handler)
 
-    # --- Register all handlers from the original bot ---
+    # Group 0: Conversation handlers (highest priority for messages)
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_main_menu)],
+        entry_points=[MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.handle_main_menu)],
         states={
             WAITING_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
             WAITING_CATEGORY: [
@@ -555,19 +557,23 @@ def main() -> None:
         fallbacks=[CommandHandler("start", bot.start)],
         per_message=False
     )
-    
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(conv_handler)
-    
-    # Other handlers
-    application.add_handler(CallbackQueryHandler(bot.confirm_save, pattern="^confirm_save"))
+    application.add_handler(conv_handler, group=0)
+
+    # Group 1: Other specific text commands from main menu
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.search_prompt), group=1)
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^📚 הצג לפי קטגוריה$'), bot.show_categories), group=1)
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings), group=1)
+
+    # Group 2: Callback handlers for buttons
+    application.add_handler(CallbackQueryHandler(bot.confirm_save, pattern="^confirm_save"), group=2)
     item_actions_pattern = "^(pin_|remind_|edit_|note_|delete_|setremind_|customremind_|back_|delcontent_|delnote_)"
-    application.add_handler(CallbackQueryHandler(bot.handle_item_actions, pattern=item_actions_pattern))
-    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"))
-    application.add_handler(CallbackQueryHandler(bot.show_item_callback, pattern="^show_"))
-    application.add_handler(CallbackQueryHandler(bot.handle_category_selection, pattern="^new_category"))
-    
-    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
+    application.add_handler(CallbackQueryHandler(bot.handle_item_actions, pattern=item_actions_pattern), group=2)
+    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"), group=2)
+    application.add_handler(CallbackQueryHandler(bot.show_item_callback, pattern="^show_"), group=2)
+    application.add_handler(CallbackQueryHandler(bot.handle_category_selection, pattern="^new_category"), group=2)
+
+    # Group 3: General text handler for search queries (lowest priority)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search), group=3)
 
     # Run the bot
     logger.info("Bot is starting to poll...")
