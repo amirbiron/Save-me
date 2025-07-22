@@ -463,15 +463,77 @@ class SaveMeBot:
         await update.message.reply_text("מה לחפש?")
 
     async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """טיפול בחיפוש"""
+        user_id = update.effective_user.id
         query = update.message.text.strip()
-        results = self.db.search_items(update.effective_user.id, query)
+
+        results = self.db.search_items(user_id, query)
+
         if not results:
-            await update.message.reply_text("לא נמצאו תוצאות.")
+            await update.message.reply_text("לא נמצאו תוצאות עבור החיפוש.")
             return
-        
-        keyboard = [[InlineKeyboardButton(f"{item['category']} | {item['subject']}", callback_data=f"show_{item['id']}")] for item in results[:10]]
-        await update.message.reply_text(f"נמצאו {len(results)} תוצאות:", reply_markup=InlineKeyboardMarkup(keyboard))
-    
+
+        keyboard = []
+        for item in results[:10]:
+            button_text = f"{item['category']} | {item['subject']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"showitem_{item['id']}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"נמצאו {len(results)} תוצאות:",
+            reply_markup=reply_markup
+        )
+
+    # --- Compatibility wrapper methods for new handler routing ---
+    async def ask_for_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Entry point for adding new content – prompts the user to choose a category first."""
+        # Initialize an empty temporary item for the user
+        self.pending_items[update.effective_user.id] = {}
+        # Show existing categories or let the user create a new one
+        await self.show_category_selection(update, context)
+        return WAITING_CATEGORY
+
+    async def receive_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Alias that routes category selection (callback) or new category (text)."""
+        if update.callback_query:
+            return await self.handle_category_selection(update, context)
+        else:
+            return await self.receive_new_category(update, context)
+
+    async def receive_subject_and_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Alias to keep API compatibility with newer handler mapping."""
+        return await self.receive_subject(update, context)
+
+    async def save_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Alias wrapper for editing/adding notes."""
+        return await self.handle_edit_note(update, context)
+
+    async def save_edited_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Alias wrapper for updating the main content of an item."""
+        return await self.handle_edit_content(update, context)
+
+    async def item_action_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Routes item related callback queries to the correct internal handler."""
+        query = update.callback_query
+        if not query:
+            return ConversationHandler.END
+
+        data = query.data or ""
+
+        # Quick path for displaying an item
+        if data.startswith("showitem_"):
+            await query.answer()
+            try:
+                item_id = int(data.split("_", 1)[1])
+            except (IndexError, ValueError):
+                await query.edit_message_text("שגיאה בזיהוי הפריט.")
+                return ConversationHandler.END
+            await self.show_item_with_actions(query, context, item_id)
+            return ConversationHandler.END
+
+        # Delegate all other actions to the existing comprehensive handler
+        return await self.handle_item_actions(update, context)
+
     async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         categories = self.db.get_user_categories(update.effective_user.id)
         if not categories:
@@ -525,38 +587,37 @@ def main() -> None:
 
     # Set up the application
     application = Application.builder().token(token).build()
+    
+    # --- Register all handlers with priority groups ---
     application.add_error_handler(error_handler)
 
-    # --- Register all handlers from the original bot ---
+    # Group 0: Conversation handlers (HIGHEST priority)
+    # This ensures any active conversation catches the message first.
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_main_menu)],
+        entry_points=[
+            MessageHandler(filters.TEXT('➕ הוסף תוכן חדש'), bot.ask_for_category),
+            CallbackQueryHandler(bot.item_action_router, pattern="^(note_|edit_)")
+        ],
         states={
-            WAITING_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
-            WAITING_CATEGORY: [
-                CallbackQueryHandler(bot.handle_category_selection, pattern="^cat_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_new_category)
-            ],
-            WAITING_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject)],
-            WAITING_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.handle_edit_content)],
-            WAITING_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_edit_note)],
-            WAITING_REMINDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_custom_reminder)]
+            WAITING_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
+            WAITING_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
+            WAITING_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
+            WAITING_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.save_edited_content)]
         },
-        fallbacks=[CommandHandler("start", bot.start)],
-        per_message=False
+        fallbacks=[CommandHandler('start', bot.start)],
+        per_user=True, per_chat=True
     )
-    
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(conv_handler)
-    
-    # Other handlers
-    application.add_handler(CallbackQueryHandler(bot.confirm_save, pattern="^confirm_save"))
-    item_actions_pattern = "^(pin_|remind_|edit_|note_|delete_|setremind_|customremind_|back_|delcontent_|delnote_)"
-    application.add_handler(CallbackQueryHandler(bot.handle_item_actions, pattern=item_actions_pattern))
-    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"))
-    application.add_handler(CallbackQueryHandler(bot.show_item_callback, pattern="^show_"))
-    application.add_handler(CallbackQueryHandler(bot.handle_category_selection, pattern="^new_category"))
-    
-    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search))
+    application.add_handler(conv_handler, group=0)
+
+    # Group 1: Specific commands and callback queries (NORMAL priority)
+    application.add_handler(CommandHandler("start", bot.start), group=1)
+    application.add_handler(CommandHandler("categories", bot.show_categories), group=1)
+    application.add_handler(CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"), group=1)
+    application.add_handler(CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_)", ), group=1)
+
+    # Group 2: General message handler for search (LOWEST priority)
+    # This will only run if the message was not caught by the conversation handler in group 0.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search), group=2)
 
     # Run the bot
     logger.info("Bot is starting to poll...")
