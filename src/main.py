@@ -4,6 +4,7 @@ import threading
 from datetime import datetime
 from flask import Flask
 from typing import Dict, Any
+import re
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -14,6 +15,12 @@ from telegram.constants import ParseMode
 from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
 
 from database.database_manager import Database
+
+# Helper function to escape markdown
+def escape_markdown(text: str) -> str:
+    """Helper function to escape telegram markdown characters."""
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 # --- Flask App for Render Health Check ---
 flask_app = Flask('')
@@ -75,8 +82,14 @@ class SaveMeBot:
                 await update_or_query.edit_message_text("הפריט נמחק.")
             return
 
-        metadata_text = f"📁 **קטגוריה:** {item['category']}\n📝 **נושא:** {item['subject']}"
-        if item.get('note'): metadata_text += f"\n\n🗒️ **הערה:** {item['note']}"
+        # --- הודעת ניהול (מטא-דאטה וכפתורים) ---
+        category = escape_markdown(item['category'])
+        subject = escape_markdown(item['subject'])
+        note = escape_markdown(item.get('note', ''))
+
+        metadata_text = f"📁 **קטגוריה:** {category}\n📝 **נושא:** {subject}"
+        if note:
+            metadata_text += f"\n\n🗒️ **הערה:** {note}"
 
         pin_text = "📌 בטל קיבוע" if item.get('is_pinned') else "📌 קבע"
         note_text = "✏️ ערוך הערה" if item.get('note') else "📝 הוסף הערה"
