@@ -77,7 +77,7 @@ class SaveMeBot:
 """
 
         keyboard = [
-            [KeyboardButton("➕ הוסף תוכן")],
+            [KeyboardButton("➕ הוסף תוכן חדש")],
             [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג לפי קטגוריה")],
             [KeyboardButton("⚙️ הגדרות")]
         ]
@@ -90,7 +90,7 @@ class SaveMeBot:
         text = update.message.text
         user_id = update.effective_user.id
         
-        if text == "➕ הוסף תוכן":
+        if text == "➕ הוסף תוכן חדש":
             await update.message.reply_text("שלח לי את התוכן לשמירה (טקסט, קובץ, תמונה או Reply על הודעה):")
             return WAITING_CONTENT
             
