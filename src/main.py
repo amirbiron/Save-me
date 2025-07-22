@@ -569,6 +569,11 @@ class SaveMeBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("הגדרות:", reply_markup=reply_markup)
 
+    async def cancel_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Cancels and ends the conversation."""
+        await update.message.reply_text("הפעולה בוטלה.")
+        return ConversationHandler.END
+
 # --- Main Execution ---
 def main() -> None:
     """Start the bot and the keep-alive server."""
@@ -592,7 +597,6 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     # Group 0: Conversation handlers (HIGHEST priority)
-    # This ensures any active conversation catches the message first.
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.TEXT('➕ הוסף תוכן חדש'), bot.ask_for_category),
@@ -604,7 +608,7 @@ def main() -> None:
             WAITING_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
             WAITING_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.save_edited_content)]
         },
-        fallbacks=[CommandHandler('start', bot.start)],
+        fallbacks=[CommandHandler('start', bot.start), CommandHandler('cancel', bot.cancel_conversation)],
         per_user=True, per_chat=True
     )
     application.add_handler(conv_handler, group=0)
@@ -616,7 +620,6 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_)", ), group=1)
 
     # Group 2: General message handler for search (LOWEST priority)
-    # This will only run if the message was not caught by the conversation handler in group 0.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search), group=2)
 
     # Run the bot
