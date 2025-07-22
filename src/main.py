@@ -173,9 +173,23 @@ class SaveMeBot:
     async def receive_subject_and_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['new_item']['subject'] = update.message.text.strip()
         item_data = context.user_data['new_item']
-        item_id = self.db.save_item(user_id=update.effective_user.id, **item_data)
+        
+        # Call the save_item function with all required parameters
+        item_id = self.db.save_item(
+            user_id=update.effective_user.id,
+            category=item_data.get('category'),
+            subject=item_data.get('subject'),
+            content_type=item_data.get('type'),
+            content=item_data.get('content', ''),
+            file_id=item_data.get('file_id', ''),
+            file_name=item_data.get('file_name', ''),
+            caption=item_data.get('caption', '')
+        )
+        
         await update.message.reply_text("✅ נשמר בהצלחה!")
         await self.show_item_with_actions(update, context, item_id)
+        
+        # Clean up user_data and return to the main menu
         del context.user_data['new_item']
         return await self.start(update, context)
 
