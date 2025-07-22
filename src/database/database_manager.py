@@ -259,6 +259,22 @@ class Database:
             logger.error(f"Error updating content for item {item_id}: {e}")
             return False
     
+    def update_subject(self, item_id: int, subject: str) -> bool:
+        """עדכון נושא הפריט"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE saved_items 
+                    SET subject = ?, updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = ?
+                ''', (subject, item_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating subject for item {item_id}: {e}")
+            return False
+    
     def update_note(self, item_id: int, note: str) -> bool:
         """עדכון הערה לפריט"""
         try:
