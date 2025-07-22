@@ -599,7 +599,7 @@ def main() -> None:
     # Group 0: Conversation handlers (HIGHEST priority)
     conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.TEXT('➕ הוסף תוכן חדש'), bot.ask_for_category),
+            MessageHandler(filters.Regex('^➕ הוסף תוכן חדש$'), bot.ask_for_category),
             CallbackQueryHandler(bot.item_action_router, pattern="^(note_|edit_)")
         ],
         states={
