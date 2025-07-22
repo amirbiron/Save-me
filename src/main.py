@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH = range(7)
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH = range(8)
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -95,6 +95,7 @@ class SaveMeBot:
         note_text = "✏️ ערוך הערה" if item.get('note') else "📝 הוסף הערה"
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
+            [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}")],
             [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
             [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
@@ -215,9 +216,21 @@ class SaveMeBot:
 
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
-        if action == 'edit': await query.edit_message_text("שלח את התוכן החדש:"); return AWAIT_EDIT
+        elif action == 'edit': await query.edit_message_text("שלח את התוכן החדש:"); return AWAIT_EDIT
+        elif action == 'editsubject': await query.edit_message_text("הקלד את הנושא החדש:"); return AWAIT_SUBJECT_EDIT
 
         return SELECTING_ACTION
+
+    async def save_edited_subject(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        item_id = context.user_data.get('action_item_id')
+        if not item_id:
+            return await self.start(update, context)
+        new_subject = update.message.text.strip()
+        self.db.update_subject(item_id, new_subject)
+        await update.message.reply_text("✅ הנושא עודכן.")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['action_item_id']
+        return await self.start(update, context)
 
     async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query; await query.answer()
@@ -256,14 +269,15 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_)")
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_)")
             ],
             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
             AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
             AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
             AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
             AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
-            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))] # Placeholder
+            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
+            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
