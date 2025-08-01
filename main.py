@@ -20,6 +20,14 @@ from telegram.constants import ParseMode
 from database.database_manager import Database
 from web_app import app
 from config import Config
+from activity_reporter import create_reporter
+
+# Activity Reporter setup (keep after variable loading)
+reporter = create_reporter(
+    mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
+    service_id="srv-d1t3lijuibrs738s0af0",
+    service_name="SaveMe"
+)
 
 # הגדרת לוגים
 logging.basicConfig(
@@ -35,9 +43,15 @@ class SaveMeBot:
     def __init__(self):
         self.db = Database()
         self.pending_items: Dict[int, Dict[str, Any]] = {}
+
+    # --- Activity Reporting Helper ---
+    def _report(self, update: Update):
+        """Send interaction information to central activity monitor."""
+        reporter.report_activity(update.effective_user.id)
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הודעת פתיחה ותפריט ראשי"""
+        self._report(update)
         user_id = update.effective_user.id
         username = update.effective_user.first_name or "משתמש"
         
@@ -61,6 +75,7 @@ class SaveMeBot:
 
     async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בתפריט הראשי"""
+        self._report(update)
         text = update.message.text
         user_id = update.effective_user.id
         
@@ -81,6 +96,7 @@ class SaveMeBot:
 
     async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """קבלת תוכן לשמירה"""
+        self._report(update)
         user_id = update.effective_user.id
         message = update.message
         
@@ -122,6 +138,7 @@ class SaveMeBot:
 
     async def show_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת בחירת קטגוריה"""
+        self._report(update)
         user_id = update.effective_user.id
         categories = self.db.get_user_categories(user_id)
         
@@ -136,6 +153,7 @@ class SaveMeBot:
 
     async def handle_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בבחירת קטגוריה"""
+        self._report(update)
         query = update.callback_query
         await query.answer()
         
@@ -155,6 +173,7 @@ class SaveMeBot:
 
     async def receive_new_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """קבלת שם קטגוריה חדשה"""
+        self._report(update)
         user_id = update.effective_user.id
         category = update.message.text.strip()
         
@@ -168,6 +187,7 @@ class SaveMeBot:
 
     async def receive_subject(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """קבלת נושא הפריט"""
+        self._report(update)
         user_id = update.effective_user.id
         subject = update.message.text.strip()
         
@@ -193,6 +213,7 @@ class SaveMeBot:
 
     async def confirm_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """אישור שמירת הפריט"""
+        self._report(update)
         query = update.callback_query
         await query.answer()
         
@@ -266,6 +287,7 @@ class SaveMeBot:
 
     async def handle_item_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בפעולות על פריטים"""
+        self._report(update)
         query = update.callback_query
         await query.answer()
         
@@ -404,6 +426,7 @@ class SaveMeBot:
 
     async def handle_edit_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בעריכת תוכן פריט"""
+        self._report(update)
         user_id = update.effective_user.id
         message = update.message
         item_id = context.user_data.get('editing_item')
@@ -456,6 +479,7 @@ class SaveMeBot:
 
     async def handle_edit_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בעריכת הערה"""
+        self._report(update)
         user_id = update.effective_user.id
         note = update.message.text.strip()
         item_id = context.user_data.get('editing_note')
@@ -483,6 +507,7 @@ class SaveMeBot:
 
     async def handle_custom_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול בתזכורת מותאמת"""
+        self._report(update)
         user_id = update.effective_user.id
         text = update.message.text.strip()
         item_id = context.user_data.get('custom_reminder')
@@ -525,10 +550,12 @@ class SaveMeBot:
 
     async def search_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת הנחיה לחיפוש"""
+        self._report(update)
         await update.message.reply_text("מה לחפש? (טקסט חופשי, קטגוריה או נושא)")
 
     async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """טיפול בחיפוש"""
+        self._report(update)
         user_id = update.effective_user.id
         query = update.message.text.strip()
         
@@ -556,6 +583,7 @@ class SaveMeBot:
 
     async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת קטגוריות"""
+        self._report(update)
         user_id = update.effective_user.id
         categories = self.db.get_user_categories(user_id)
         
@@ -574,6 +602,7 @@ class SaveMeBot:
 
     async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת פריטים בקטגוריה"""
+        self._report(update)
         query = update.callback_query
         await query.answer()
         
@@ -600,6 +629,7 @@ class SaveMeBot:
 
     async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת הגדרות"""
+        self._report(update)
         keyboard = [
             [InlineKeyboardButton("🗂️ ניהול קטגוריות", callback_data="manage_categories")],
             [InlineKeyboardButton("📊 סטטיסטיקות", callback_data="stats")],
@@ -610,6 +640,7 @@ class SaveMeBot:
 
     async def show_item_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """הצגת פריט מכפתור"""
+        self._report(update)
         query = update.callback_query
         await query.answer()
         
