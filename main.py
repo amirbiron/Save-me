@@ -1,6 +1,5 @@
 import sys
 import os
-import atexit
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
@@ -648,51 +647,8 @@ class SaveMeBot:
         item_id = int(query.data[5:])  # הסרת "show_"
         await self.show_item_with_actions(query, item_id)
 
-# הגדרת שם קבוע לקובץ הנעילה
-LOCK_FILE = "bot.lock"
-
-def cleanup_lock_file():
-    """[מקור 7] מנקה את קובץ הנעילה ביציאה"""
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
-        print("INFO: Lock file cleaned up.")
-
-
-def manage_lock_file():
-    """
-    [מקור 2] מנהל את קובץ הנעילה כדי למנוע ריצה כפולה.
-    """
-    # [מקור 4] אם הקובץ כבר קיים, בודקים אותו
-    if os.path.exists(LOCK_FILE):
-        try:
-            with open(LOCK_FILE, "r") as f:
-                pid = int(f.read().strip())
-        except (IOError, ValueError):
-            # אם יש בעיה בקריאת הקובץ, מתייחסים אליו כאל קובץ יתום
-            pid = None
-
-        if pid:
-            # בדיקה אם התהליך עם ה-PID הרשום עדיין חי
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                # [מקור 6] התהליך מת, מנקים את הקובץ הישן
-                print(f"WARNING: Found stale lock file for dead process {pid}. Cleaning up.")
-                cleanup_lock_file()
-            else:
-                # [מקור 5] התהליך עדיין חי, יוצאים מהתוכנית החדשה
-                print(f"ERROR: Another instance of the bot (PID: {pid}) is already running. Exiting.")
-                sys.exit(1)  # יציאה מיידית כדי למנוע קונפליקט
-
-    # [מקור 3] יוצרים קובץ נעילה חדש ורושמים את ה-PID הנוכחי
-    atexit.register(cleanup_lock_file)
-    with open(LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
-    print(f"INFO: Lock file created for process {os.getpid()}.")
-
 def main() -> None:
     """פונקציה ראשית"""
-    manage_lock_file()
     bot = SaveMeBot()
     
     # יצירת האפליקציה
