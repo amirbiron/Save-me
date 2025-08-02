@@ -15,6 +15,14 @@ from telegram.constants import ParseMode
 from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
 
 from database.database_manager import Database
+from activity_reporter import create_reporter
+
+# Activity Reporter setup (keep after variable loading)
+reporter = create_reporter(
+    mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
+    service_id="srv-d1t3lijuibrs738s0af0",
+    service_name="SaveMe"
+)
 
 # Helper function to escape markdown
 def escape_markdown(text: str) -> str:
@@ -53,8 +61,13 @@ class SaveMeBot:
         db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
 
+    # --- Activity Reporting Helper ---
+    def _report(self, update: Update):
+        reporter.report_activity(update.effective_user.id)
+
     # --- Main Menu and State Entrypoints ---
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         username = update.effective_user.first_name
         welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
         keyboard = [
@@ -67,10 +80,12 @@ class SaveMeBot:
         return SELECTING_ACTION
 
     async def ask_for_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         await update.message.reply_text("שלח לי את התוכן לשמירה:")
         return AWAIT_CONTENT
 
     async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         await update.message.reply_text("מה לחפש?")
         return AWAIT_SEARCH
 
@@ -119,6 +134,7 @@ class SaveMeBot:
     # --- All other class methods from your bot logic go here ---
     # (show_categories, handle_search, receive_content, receive_category, save_note, etc.)
     async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self._report(update)
         categories = self.db.get_user_categories(update.effective_user.id)
         if not categories:
             await update.message.reply_text("אין קטגוריות עדיין.")
@@ -127,6 +143,7 @@ class SaveMeBot:
         await update.message.reply_text("בחר קטגוריה להצגה:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def handle_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         query = update.message.text.strip()
         results = self.db.search_items(update.effective_user.id, query)
         if not results:
@@ -137,6 +154,7 @@ class SaveMeBot:
         return await self.start(update, context) # Return to main menu
 
     async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         message = update.message
         content_data = {}
         if message.text: content_data.update({'type': 'text', 'content': message.text})
@@ -155,6 +173,7 @@ class SaveMeBot:
         return AWAIT_CATEGORY
 
     async def receive_category(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         query = update.callback_query
         category_name = ""
         if query:
@@ -172,6 +191,7 @@ class SaveMeBot:
         return AWAIT_SUBJECT
 
     async def receive_subject_and_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         context.user_data['new_item']['subject'] = update.message.text.strip()
         item_data = context.user_data['new_item']
         
@@ -195,6 +215,7 @@ class SaveMeBot:
         return await self.start(update, context)
 
     async def save_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         item_id = context.user_data.get('action_item_id')
         if not item_id: return await self.start(update, context)
         self.db.update_note(item_id, update.message.text)
@@ -204,6 +225,7 @@ class SaveMeBot:
         return await self.start(update, context)
 
     async def item_action_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         query = update.callback_query; await query.answer()
         action, item_id_str = query.data.split('_', 1)
         item_id = int(item_id_str)
@@ -222,6 +244,7 @@ class SaveMeBot:
         return SELECTING_ACTION
 
     async def save_edited_subject(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         item_id = context.user_data.get('action_item_id')
         if not item_id:
             return await self.start(update, context)
@@ -233,6 +256,7 @@ class SaveMeBot:
         return await self.start(update, context)
 
     async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self._report(update)
         query = update.callback_query; await query.answer()
         category = query.data.replace('showcat_', '')
         items = self.db.get_category_items(update.effective_user.id, category)
@@ -243,9 +267,11 @@ class SaveMeBot:
         await query.edit_message_text(f"📁 פריטים בקטגוריית {category}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self._report(update)
         await update.message.reply_text("אזור הגדרות (בבנייה).")
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
         await update.message.reply_text("הפעולה בוטלה.")
         return await self.start(update, context)
 
