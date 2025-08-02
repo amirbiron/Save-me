@@ -26,7 +26,7 @@ from activity_reporter import create_reporter
 reporter = create_reporter(
     mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
     service_id="srv-d1t3lijuibrs738s0af0",
-    service_name="SaveMe"
+    service_name="Save-me"
 )
 
 # הגדרת לוגים
