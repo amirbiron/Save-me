@@ -30,12 +30,49 @@ def escape_markdown(text: str) -> str:
     escape_chars = r'\_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
+# Heuristic language detection for code snippets
+def detect_code_language(text: str) -> str | None:
+    try:
+        sample = text.strip()
+        first_line = sample.splitlines()[0] if sample else ""
+        if re.match(r'^#!/bin/(bash|sh)', sample):
+            return 'bash'
+        if '<?php' in sample:
+            return 'php'
+        if re.search(r'</?[a-zA-Z][\w:-]*\b', sample) and '<' in sample and '>' in sample:
+            return 'html'
+        if re.search(r'^\s*\{', sample) and re.search(r'"[^"]+"\s*:', sample):
+            return 'json'
+        if re.search(r'^(FROM|RUN|CMD|COPY|ENTRYPOINT|ENV|ARG|WORKDIR|EXPOSE)\b', sample, re.IGNORECASE | re.MULTILINE):
+            return 'dockerfile'
+        if re.search(r'^\s*\[.+\]\s*$', sample, re.MULTILINE) and re.search(r'=', sample):
+            return 'ini'
+        if re.search(r'^[\s\-\w]+:\s+.+$', sample, re.MULTILINE) and not re.search(r';\s*$', sample, re.MULTILINE):
+            return 'yaml'
+        if re.search(r'\bpackage\s+main\b', sample) or re.search(r'\bfunc\s+\w+\s*\(', sample):
+            return 'go'
+        if re.search(r'\bfn\s+\w+\s*\(|println!\s*\(', sample):
+            return 'rust'
+        if re.search(r'\busing\s+System\b|\bnamespace\b|public\s+class\b', sample):
+            return 'csharp'
+        if re.search(r'\bpublic\s+class\b|System\.out\.println', sample):
+            return 'java'
+        if re.search(r'\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bCREATE\b|\bTABLE\b', sample, re.IGNORECASE):
+            return 'sql'
+        if re.search(r'\b(def|class)\s+\w+|from\s+\w+\s+import|import\s+\w+', sample) and not re.search(r';\s*$', first_line):
+            return 'python'
+        if re.search(r'\b(const|let|var|function)\b|=>|console\.log|import\s+.*\s+from\s+', sample):
+            return 'javascript'
+        return None
+    except Exception:
+        return None
+
 # Helper to format text content to preserve code/Markdown rendering in Telegram
 def format_text_content_for_telegram(text: str):
     """Return (formatted_text, parse_mode) for Telegram so code/Markdown is preserved.
 
     - If content already includes triple backticks, send as-is with Markdown parse mode.
-    - If content looks like code/Markdown, wrap in triple backticks and send with Markdown parse mode.
+    - If content looks like code/Markdown, wrap in triple backticks (with language when detected) and send with Markdown parse mode.
     - Otherwise, send as plain text (no parse mode).
     """
     try:
@@ -49,7 +86,10 @@ def format_text_content_for_telegram(text: str):
         ]
         for pattern in patterns:
             if re.search(pattern, text):
-                return f"```\n{text}\n```", ParseMode.MARKDOWN
+                lang = detect_code_language(text) or ''
+                lang_suffix = lang if lang else ''
+                fence = f"```{lang_suffix}\n{text}\n```"
+                return fence, ParseMode.MARKDOWN
         return text, None
     except Exception:
         return text, None
