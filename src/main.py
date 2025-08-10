@@ -175,8 +175,27 @@ class SaveMeBot:
         buffer = BytesIO(data)
         buffer.name = filename
 
-        await update.message.reply_document(document=buffer, filename=filename, caption="הנה הקובץ שהומר ל-Markdown ✅")
-        return await self.start(update, context)
+        sent_message = await update.message.reply_document(
+            document=buffer,
+            filename=filename,
+            caption="הנה הקובץ שהומר ל-Markdown ✅"
+        )
+
+        # Prepare saving flow (store as a Telegram document so we can re-send it later)
+        context.user_data['new_item'] = {
+            'type': 'document',
+            'file_id': sent_message.document.file_id if sent_message and sent_message.document else '',
+            'file_name': filename,
+            'caption': '',
+            'content': text  # keep original text for searchability
+        }
+
+        # Ask for category (reuse the same flow as manual add)
+        categories = self.db.get_user_categories(update.effective_user.id)
+        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
+        await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return AWAIT_CATEGORY
 
     # --- Display Logic ---
     async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
