@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Flask
 from typing import Dict, Any
 import re
+from io import BytesIO
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -112,7 +113,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH = range(8)
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT = range(9)
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -152,6 +153,56 @@ class SaveMeBot:
         self._report(update)
         await update.message.reply_text("מה לחפש?")
         return AWAIT_SEARCH
+
+    # New: Ask for text to convert to Markdown
+    async def ask_for_md_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        await update.message.reply_text("שלח את הטקסט להמרה לקובץ Markdown (.md):")
+        return AWAIT_MD_TEXT
+
+    # New: Convert received text to .md and send back
+    async def convert_text_to_md_and_send(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        text = (update.message.text or '').strip()
+        if not text:
+            await update.message.reply_text("לא התקבל טקסט. שלח טקסט רגיל להמרה.")
+            return AWAIT_MD_TEXT
+
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        filename = f"note-{timestamp}.md"
+
+        data = text.encode('utf-8')
+        buffer = BytesIO(data)
+        buffer.name = filename
+
+        sent_message = await update.message.reply_document(
+            document=buffer,
+            filename=filename,
+            caption="הנה הקובץ שהומר ל-Markdown ✅"
+        )
+
+        # Auto-save: determine defaults
+        default_category = "קבצי Markdown"
+        first_line = next((line for line in text.splitlines() if line.strip()), "").strip()
+        subject = (first_line[:80] if first_line else filename.replace('.md', '')) or filename.replace('.md', '')
+
+        file_id = sent_message.document.file_id if getattr(sent_message, 'document', None) else ''
+
+        # Save item to DB
+        item_id = self.db.save_item(
+            user_id=update.effective_user.id,
+            category=default_category,
+            subject=subject,
+            content_type='document',
+            content=text,
+            file_id=file_id,
+            file_name=filename,
+            caption=''
+        )
+
+        await update.message.reply_text("✅ נשמר אוטומטית.")
+        await self.show_item_with_actions(update, context, item_id)
+        return await self.start(update, context)
 
     # --- Display Logic ---
     async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
@@ -355,7 +406,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', bot.start)],
+        entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text)],
         states={
             SELECTING_ACTION: [
                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
@@ -371,7 +422,8 @@ def main() -> None:
             AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
             AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
             AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
-            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)]
+            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
+            AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
