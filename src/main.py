@@ -169,41 +169,21 @@ class SaveMeBot:
             await update.message.reply_text("לא התקבל טקסט. שלח טקסט רגיל להמרה.")
             return AWAIT_MD_TEXT
 
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        filename = f"note-{timestamp}.md"
+        # Show the content (rendered/escaped) instead of sending a file
+        preview_text, parse_mode = format_text_content_for_telegram(text)
+        if parse_mode:
+            await update.message.reply_text(preview_text, parse_mode=parse_mode)
+        else:
+            await update.message.reply_text(preview_text)
 
-        data = text.encode('utf-8')
-        buffer = BytesIO(data)
-        buffer.name = filename
+        # Prepare save flow like a regular save (user chooses category and subject)
+        context.user_data['new_item'] = {'type': 'text', 'content': text}
 
-        sent_message = await update.message.reply_document(
-            document=buffer,
-            filename=filename,
-            caption="הנה הקובץ שהומר ל-Markdown ✅"
-        )
-
-        # Auto-save: determine defaults
-        default_category = "קבצי Markdown"
-        first_line = next((line for line in text.splitlines() if line.strip()), "").strip()
-        subject = (first_line[:80] if first_line else filename.replace('.md', '')) or filename.replace('.md', '')
-
-        file_id = sent_message.document.file_id if getattr(sent_message, 'document', None) else ''
-
-        # Save item to DB
-        item_id = self.db.save_item(
-            user_id=update.effective_user.id,
-            category=default_category,
-            subject=subject,
-            content_type='document',
-            content=text,
-            file_id=file_id,
-            file_name=filename,
-            caption=''
-        )
-
-        await update.message.reply_text("✅ נשמר אוטומטית.")
-        await self.show_item_with_actions(update, context, item_id)
-        return await self.start(update, context)
+        categories = self.db.get_user_categories(update.effective_user.id)
+        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
+        await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return AWAIT_CATEGORY
 
     # --- Display Logic ---
     async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
@@ -240,8 +220,8 @@ class SaveMeBot:
             await context.bot.send_message(chat_id=chat_id, text=metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
         content_type = item.get('content_type')
-        if content_type == 'text':
-            text_to_send, parse_mode = format_text_content_for_telegram(item['content'] or '')
+        if content_type == 'text' or (content_type == 'document' and (item.get('file_name', '').endswith('.md')) and (item.get('content') is not None and item.get('content') != '')):
+            text_to_send, parse_mode = format_text_content_for_telegram(item.get('content', ''))
             if parse_mode:
                 await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
             else:
