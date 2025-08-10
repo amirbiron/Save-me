@@ -137,6 +137,7 @@ class SaveMeBot:
         welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
         keyboard = [
             [KeyboardButton("➕ הוסף תוכן")],
+            [KeyboardButton("📝 המרה ל-Markdown")],
             [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
             [KeyboardButton("⚙️ הגדרות")]
         ]
@@ -410,6 +411,7 @@ def main() -> None:
         states={
             SELECTING_ACTION: [
                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
+                MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
                 MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
