@@ -181,21 +181,28 @@ class SaveMeBot:
             caption="הנה הקובץ שהומר ל-Markdown ✅"
         )
 
-        # Prepare saving flow (store as a Telegram document so we can re-send it later)
-        context.user_data['new_item'] = {
-            'type': 'document',
-            'file_id': sent_message.document.file_id if sent_message and sent_message.document else '',
-            'file_name': filename,
-            'caption': '',
-            'content': text  # keep original text for searchability
-        }
+        # Auto-save: determine defaults
+        default_category = "קבצי Markdown"
+        first_line = next((line for line in text.splitlines() if line.strip()), "").strip()
+        subject = (first_line[:80] if first_line else filename.replace('.md', '')) or filename.replace('.md', '')
 
-        # Ask for category (reuse the same flow as manual add)
-        categories = self.db.get_user_categories(update.effective_user.id)
-        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
-        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
-        await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
-        return AWAIT_CATEGORY
+        file_id = sent_message.document.file_id if getattr(sent_message, 'document', None) else ''
+
+        # Save item to DB
+        item_id = self.db.save_item(
+            user_id=update.effective_user.id,
+            category=default_category,
+            subject=subject,
+            content_type='document',
+            content=text,
+            file_id=file_id,
+            file_name=filename,
+            caption=''
+        )
+
+        await update.message.reply_text("✅ נשמר אוטומטית.")
+        await self.show_item_with_actions(update, context, item_id)
+        return await self.start(update, context)
 
     # --- Display Logic ---
     async def show_item_with_actions(self, update_or_query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
