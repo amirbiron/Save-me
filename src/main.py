@@ -30,6 +30,30 @@ def escape_markdown(text: str) -> str:
     escape_chars = r'\_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
+# Helper to format text content to preserve code/Markdown rendering in Telegram
+def format_text_content_for_telegram(text: str):
+    """Return (formatted_text, parse_mode) for Telegram so code/Markdown is preserved.
+
+    - If content already includes triple backticks, send as-is with Markdown parse mode.
+    - If content looks like code/Markdown, wrap in triple backticks and send with Markdown parse mode.
+    - Otherwise, send as plain text (no parse mode).
+    """
+    try:
+        if '```' in text:
+            return text, ParseMode.MARKDOWN
+        patterns = [
+            r'(^|\n)\s{4,}',                              # indented code blocks
+            r'(^|\n)(#{1,6}\s|\- |\* |\d+\. |> )',    # markdown headings/lists/quotes
+            r'\b(def|class|import|from|const|let|var|function|public|private|return|if|else|for|while|try|catch)\b',
+            r'[{};=<>\[\]]'                                # common code punctuation
+        ]
+        for pattern in patterns:
+            if re.search(pattern, text):
+                return f"```\n{text}\n```", ParseMode.MARKDOWN
+        return text, None
+    except Exception:
+        return text, None
+
 # --- Flask App for Render Health Check ---
 flask_app = Flask('')
 @flask_app.route('/')
@@ -125,7 +149,11 @@ class SaveMeBot:
 
         content_type = item.get('content_type')
         if content_type == 'text':
-            await context.bot.send_message(chat_id=chat_id, text=item['content'])
+            text_to_send, parse_mode = format_text_content_for_telegram(item['content'] or '')
+            if parse_mode:
+                await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=text_to_send)
         elif content_type and item.get('file_id'):
             send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
             if content_type in send_map:
