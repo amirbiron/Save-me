@@ -279,6 +279,39 @@ class SaveMeBot:
     async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
         message = update.message
+
+        # Chunk protocol integration (text messages only)
+        if message.text and message.text.strip().startswith('['):
+            from chunk_protocol import parse_protocol_message
+            from chunk_assembler import ChunkAssembler
+
+            # singleton assembler per bot instance
+            if not hasattr(self, '_chunk_assembler'):
+                root_dir = os.environ.get('SAVE_ROOT', 'saved_files')
+                self._chunk_assembler = ChunkAssembler(root_dir=root_dir)
+            msg = parse_protocol_message(message.text)
+            if msg:
+                ack = self._chunk_assembler.on_message(message.text, chat_key=str(update.effective_chat.id))
+                if ack is not None:
+                    if ack.get('ok') and ack.get('stage') == 'end':
+                        await update.message.reply_text(f"✅ קובץ נשמר: {ack.get('path')} ({ack.get('bytes')} bytes)")
+                        # After file saved, continue regular save flow as a document reference
+                        context.user_data['new_item'] = {
+                            'type': 'document',
+                            'file_id': '',
+                            'file_name': os.path.basename(ack.get('path') or ''),
+                            'caption': ''
+                        }
+                        categories = self.db.get_user_categories(update.effective_user.id)
+                        keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+                        keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
+                        await update.message.reply_text("בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
+                        return AWAIT_CATEGORY
+                    else:
+                        # Acknowledge intermediate or error
+                        await update.message.reply_text(str(ack))
+                        return AWAIT_CONTENT
+
         content_data = {}
         if message.text: content_data.update({'type': 'text', 'content': message.text})
         elif message.photo: content_data.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ""})
