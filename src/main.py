@@ -205,45 +205,44 @@ class SaveMeBot:
                 context.user_data['multipart_buffer'] = buf
                 await update.message.reply_text(f"נוסף קטע. כרגע {len(buf)} קטעים. לחץ '✔️ סיום' כשאתה מוכן.")
                 return AWAIT_MULTIPART
-                return AWAIT_MULTIPART
  
-     async def upload_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-         self._report(update)
-         text = (
-             "איך להעלות תוכן:\n\n"
-             "1) קובץ מצורף: שלח כ-document/photo/video לפי הצורך.\n"
-             "2) טקסט ארוך: לחץ על 'התחל איסוף טקסט' ושלח כמה הודעות, ואז סיים.\n"
-         )
-         keyboard = [[InlineKeyboardButton("התחל איסוף טקסט", callback_data="upload_start_multipart")],
-                     [InlineKeyboardButton("סגור", callback_data="upload_close")]]
-         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-         return SELECTING_ACTION
- 
-     async def upload_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-         self._report(update)
-         query = update.callback_query
-         if not query:
-             return SELECTING_ACTION
-         await query.answer()
-         if query.data == 'upload_start_multipart':
-             # Start multipart collection via callback
-             context.user_data['multipart_buffer'] = []
-             kb = [[InlineKeyboardButton("✔️ סיום", callback_data="multipart_end")],
-                   [InlineKeyboardButton("✖️ ביטול", callback_data="multipart_cancel")]]
-             await context.bot.send_message(chat_id=update.effective_chat.id, text="מצב איסוף הופעל. שלח הודעות טקסט ואז לחץ '✔️ סיום'", reply_markup=InlineKeyboardMarkup(kb))
-             return AWAIT_MULTIPART
-         if query.data == 'upload_close':
-             try:
-                 await query.edit_message_text("נסגר.")
-             except Exception:
-                 pass
-             return SELECTING_ACTION
-         return SELECTING_ACTION
- 
-     async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-         self._report(update)
-         await update.message.reply_text("מה לחפש?")
-         return AWAIT_SEARCH
+    async def upload_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        text = (
+            "איך להעלות תוכן:\n\n"
+            "1) קובץ מצורף: שלח כ-document/photo/video לפי הצורך.\n"
+            "2) טקסט ארוך: לחץ על 'התחל איסוף טקסט' ושלח כמה הודעות, ואז סיים.\n"
+        )
+        keyboard = [[InlineKeyboardButton("התחל איסוף טקסט", callback_data="upload_start_multipart")],
+                    [InlineKeyboardButton("סגור", callback_data="upload_close")]]
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return SELECTING_ACTION
+
+    async def upload_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        query = update.callback_query
+        if not query:
+            return SELECTING_ACTION
+        await query.answer()
+        if query.data == 'upload_start_multipart':
+            # Start multipart collection via callback
+            context.user_data['multipart_buffer'] = []
+            kb = [[InlineKeyboardButton("✔️ סיום", callback_data="multipart_end")],
+                  [InlineKeyboardButton("✖️ ביטול", callback_data="multipart_cancel")]]
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="מצב איסוף הופעל. שלח הודעות טקסט ואז לחץ '✔️ סיום'", reply_markup=InlineKeyboardMarkup(kb))
+            return AWAIT_MULTIPART
+        if query.data == 'upload_close':
+            try:
+                await query.edit_message_text("נסגר.")
+            except Exception:
+                pass
+            return SELECTING_ACTION
+        return SELECTING_ACTION
+
+    async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        await update.message.reply_text("מה לחפש?")
+        return AWAIT_SEARCH
 
     # New: Ask for text to convert to Markdown
     async def ask_for_md_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -486,14 +485,7 @@ def main() -> None:
     application = Application.builder().token(token).build()
     application.add_error_handler(error_handler)
 
-    # Set bot commands (only those needed): /start, /upload
-    try:
-        await application.bot.set_my_commands([
-            BotCommand("start", "התחלה"),
-            BotCommand("upload", "העלאה / איסוף טקסט רב-הודעות"),
-        ])
-    except Exception:
-        pass
+    # Bot commands setup skipped to keep main() synchronous
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help)],
