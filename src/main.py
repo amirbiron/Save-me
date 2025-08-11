@@ -7,7 +7,7 @@ from typing import Dict, Any
 import re
 from io import BytesIO
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, ConversationHandler, filters
@@ -517,6 +517,15 @@ def main() -> None:
     bot = SaveMeBot()
     application = Application.builder().token(token).build()
     application.add_error_handler(error_handler)
+
+    # Set bot commands (only those needed): /start, /upload
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start", "התחלה"),
+            BotCommand("upload", "העלאה / איסוף טקסט רב-הודעות"),
+        ])
+    except Exception:
+        pass
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help)],
