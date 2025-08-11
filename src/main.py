@@ -7,7 +7,7 @@ from typing import Dict, Any
 import re
 from io import BytesIO
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, ConversationHandler, filters
@@ -127,7 +127,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT = range(9)
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART = range(10)
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -152,6 +152,7 @@ class SaveMeBot:
         keyboard = [
             [KeyboardButton("➕ הוסף תוכן")],
             [KeyboardButton("📝 המרה ל-Markdown")],
+            [KeyboardButton("🧩 איסוף טקסט רב-הודעות")],
             [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
             [KeyboardButton("⚙️ הגדרות")]
         ]
@@ -164,10 +165,85 @@ class SaveMeBot:
         await update.message.reply_text("שלח לי את התוכן לשמירה:")
         return AWAIT_CONTENT
 
-    async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    async def start_multipart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
-        await update.message.reply_text("מה לחפש?")
-        return AWAIT_SEARCH
+        context.user_data['multipart_buffer'] = []
+        keyboard = [[InlineKeyboardButton("✔️ סיום", callback_data="multipart_end")],
+                    [InlineKeyboardButton("✖️ ביטול", callback_data="multipart_cancel")]]
+        await update.message.reply_text("מצב איסוף הופעל. שלח כמה הודעות טקסט שתרצה, ואז לחץ '✔️ סיום'", reply_markup=InlineKeyboardMarkup(keyboard))
+        return AWAIT_MULTIPART
+
+    async def multipart_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        query = update.callback_query
+        if query:
+            await query.answer()
+            if query.data == 'multipart_end':
+                parts = context.user_data.get('multipart_buffer', [])
+                text = "\n".join(parts).strip()
+                context.user_data.pop('multipart_buffer', None)
+                await query.edit_message_text("קיבלתי. שמור כעת כפריט רגיל.")
+                if not text:
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text="לא התקבל טקסט.")
+                    return await self.start(update, context)
+                # Continue to category selection as text item
+                context.user_data['new_item'] = {'type': 'text', 'content': text}
+                categories = self.db.get_user_categories(update.effective_user.id)
+                keyboard = [[InlineKeyboardButton(c, callback_data=f"cat_{c}")] for c in categories]
+                keyboard.append([InlineKeyboardButton("🆕 קטגוריה חדשה", callback_data="cat_new")])
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="בחר קטגוריה:", reply_markup=InlineKeyboardMarkup(keyboard))
+                return AWAIT_CATEGORY
+            if query.data == 'multipart_cancel':
+                context.user_data.pop('multipart_buffer', None)
+                await query.edit_message_text("בוטל.")
+                return await self.start(update, context)
+        else:
+            # receive a part
+            if update.message and update.message.text:
+                buf = context.user_data.get('multipart_buffer', [])
+                buf.append(update.message.text)
+                context.user_data['multipart_buffer'] = buf
+                await update.message.reply_text(f"נוסף קטע. כרגע {len(buf)} קטעים. לחץ '✔️ סיום' כשאתה מוכן.")
+                return AWAIT_MULTIPART
+                return AWAIT_MULTIPART
+ 
+     async def upload_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+         self._report(update)
+         text = (
+             "איך להעלות תוכן:\n\n"
+             "1) קובץ מצורף: שלח כ-document/photo/video לפי הצורך.\n"
+             "2) טקסט ארוך: לחץ על 'התחל איסוף טקסט' ושלח כמה הודעות, ואז סיים.\n"
+         )
+         keyboard = [[InlineKeyboardButton("התחל איסוף טקסט", callback_data="upload_start_multipart")],
+                     [InlineKeyboardButton("סגור", callback_data="upload_close")]]
+         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+         return SELECTING_ACTION
+ 
+     async def upload_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+         self._report(update)
+         query = update.callback_query
+         if not query:
+             return SELECTING_ACTION
+         await query.answer()
+         if query.data == 'upload_start_multipart':
+             # Start multipart collection via callback
+             context.user_data['multipart_buffer'] = []
+             kb = [[InlineKeyboardButton("✔️ סיום", callback_data="multipart_end")],
+                   [InlineKeyboardButton("✖️ ביטול", callback_data="multipart_cancel")]]
+             await context.bot.send_message(chat_id=update.effective_chat.id, text="מצב איסוף הופעל. שלח הודעות טקסט ואז לחץ '✔️ סיום'", reply_markup=InlineKeyboardMarkup(kb))
+             return AWAIT_MULTIPART
+         if query.data == 'upload_close':
+             try:
+                 await query.edit_message_text("נסגר.")
+             except Exception:
+                 pass
+             return SELECTING_ACTION
+         return SELECTING_ACTION
+ 
+     async def ask_for_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+         self._report(update)
+         await update.message.reply_text("מה לחפש?")
+         return AWAIT_SEARCH
 
     # New: Ask for text to convert to Markdown
     async def ask_for_md_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -279,6 +355,7 @@ class SaveMeBot:
     async def receive_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
         message = update.message
+
         content_data = {}
         if message.text: content_data.update({'type': 'text', 'content': message.text})
         elif message.photo: content_data.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ""})
@@ -409,27 +486,42 @@ def main() -> None:
     application = Application.builder().token(token).build()
     application.add_error_handler(error_handler)
 
+    # Set bot commands (only those needed): /start, /upload
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start", "התחלה"),
+            BotCommand("upload", "העלאה / איסוף טקסט רב-הודעות"),
+        ])
+    except Exception:
+        pass
+
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text)],
+        entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help)],
         states={
-            SELECTING_ACTION: [
-                MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
-                MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
-                MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
-                MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
-                MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
-                CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_)")
-            ],
-            AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
-            AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
-            AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
-            AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
-            AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
-            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
-            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
-            AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)]
-        },
+                         SELECTING_ACTION: [
+                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
+                 MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
+                 MessageHandler(filters.TEXT & filters.Regex('^🧩 איסוף טקסט רב-הודעות$'), bot.start_multipart),
+                 MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
+                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
+                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
+                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
+                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
+                 CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_)")
+             ],
+             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
+             AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
+             AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
+             AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
+             AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
+             AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
+             AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
+             AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)],
+             AWAIT_MULTIPART: [
+                 CallbackQueryHandler(bot.multipart_router, pattern='^(multipart_end|multipart_cancel)$'),
+                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.multipart_router)
+             ]
+         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
     )
