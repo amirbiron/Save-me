@@ -157,7 +157,8 @@ class SaveMeBot:
             [KeyboardButton("⚙️ הגדרות")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        chat_id = update.effective_chat.id
+        await context.bot.send_message(chat_id=chat_id, text=welcome_text, reply_markup=reply_markup)
         return SELECTING_ACTION
 
     async def ask_for_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
