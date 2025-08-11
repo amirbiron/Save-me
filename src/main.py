@@ -73,24 +73,38 @@ def format_text_content_for_telegram(text: str):
     """Return (formatted_text, parse_mode) for Telegram so code/Markdown is preserved.
 
     - If content already includes triple backticks, send as-is with Markdown parse mode.
-    - If content looks like code/Markdown, wrap in triple backticks (with language when detected) and send with Markdown parse mode.
+    - If content looks like Markdown (headings, lists, emphasis, links), send as-is with Markdown parse mode.
+    - If content looks like code, wrap in triple backticks (with language when detected) and send with Markdown parse mode.
     - Otherwise, send as plain text (no parse mode).
     """
     try:
         if '```' in text:
             return text, ParseMode.MARKDOWN
-        patterns = [
-            r'(^|\n)\s{4,}',                              # indented code blocks
-            r'(^|\n)(#{1,6}\s|\- |\* |\d+\. |> )',    # markdown headings/lists/quotes
-            r'\b(def|class|import|from|const|let|var|function|public|private|return|if|else|for|while|try|catch)\b',
-            r'[{};=<>\[\]]'                                # common code punctuation
+
+        # Detect Markdown-like content (should be rendered, not shown as code)
+        markdown_patterns = [
+            r'(^|\n)#{1,6}\s',                 # headings
+            r'(^|\n)(?:\- |\* |\d+\. |> )', # lists / blockquote
+            r'\*\*[^\n]+\*\*',              # bold
+            r'__[^\n]+__',                      # bold (alt)
+            r'(?<!\*)\*[^\n]+\*(?!\*)',     # italic
+            r'_(?:[^\n_]|_[^\n])+_',          # italic (alt)
+            r'\[[^\]]+\]\([^\)]+\)',       # links [text](url)
         ]
-        for pattern in patterns:
-            if re.search(pattern, text):
-                lang = detect_code_language(text) or ''
-                lang_suffix = lang if lang else ''
-                fence = f"```{lang_suffix}\n{text}\n```"
-                return fence, ParseMode.MARKDOWN
+        if any(re.search(p, text, re.MULTILINE) for p in markdown_patterns):
+            return text, ParseMode.MARKDOWN
+
+        # Detect code-like content (should be fenced)
+        code_patterns = [
+            r'(^|\n)\s{4,}',  # indented code blocks
+            r'\b(def|class|import|from|const|let|var|function|public|private|return|if|else|for|while|try|catch)\b',
+            r'[{};=<>\[\]]',   # common code punctuation
+        ]
+        if any(re.search(pattern, text) for pattern in code_patterns):
+            lang = detect_code_language(text) or ''
+            fence = f"```{lang}\n{text}\n```"
+            return fence, ParseMode.MARKDOWN
+
         return text, None
     except Exception:
         return text, None
@@ -175,6 +189,15 @@ class SaveMeBot:
             await update.message.reply_text(preview_text, parse_mode=parse_mode)
         else:
             await update.message.reply_text(preview_text)
+
+        # Additionally send as a .md file so the user can open with a Markdown viewer
+        try:
+            md_bytes = BytesIO(text.encode('utf-8'))
+            md_bytes.name = f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+            await update.message.reply_document(document=md_bytes, filename=md_bytes.name, caption="קובץ Markdown")
+        except Exception:
+            # Ignore file send failures; preview already sent
+            pass
 
         # Prepare save flow like a regular save (user chooses category and subject)
         context.user_data['new_item'] = {'type': 'text', 'content': text}
