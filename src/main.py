@@ -13,7 +13,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
+from telegram.error import Conflict, NetworkError, Forbidden, TimedOut, BadRequest
 
 from database.database_manager import Database
 from activity_reporter import create_reporter
@@ -79,7 +79,8 @@ def format_text_content_for_telegram(text: str):
     """
     try:
         if '```' in text:
-            return text, ParseMode.MARKDOWN
+            # Triple backticks require MarkdownV2 to render reliably
+            return text, ParseMode.MARKDOWN_V2
 
         # Detect Markdown-like content (should be rendered, not shown as code)
         markdown_patterns = [
@@ -103,11 +104,45 @@ def format_text_content_for_telegram(text: str):
         if any(re.search(pattern, text) for pattern in code_patterns):
             lang = detect_code_language(text) or ''
             fence = f"```{lang}\n{text}\n```"
-            return fence, ParseMode.MARKDOWN
+            # Use MarkdownV2 for fenced code blocks
+            return fence, ParseMode.MARKDOWN_V2
 
         return text, None
     except Exception:
         return text, None
+
+# --- Safe sending helpers ---
+async def send_text_resilient(bot, chat_id: int, text: str, parse_mode: str | None = None):
+    """Send text safely with fallbacks for parse errors and long messages."""
+    try:
+        if parse_mode:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        else:
+            await bot.send_message(chat_id=chat_id, text=text)
+    except BadRequest as e:
+        msg = str(e).lower()
+        if 'message is too long' in msg or 'must be between 1 and 4096' in msg or 'too long' in msg:
+            # Fallback to sending as a file
+            try:
+                from io import BytesIO
+                from datetime import datetime
+                is_md = parse_mode in (ParseMode.MARKDOWN, ParseMode.MARKDOWN_V2) or text.strip().startswith('```')
+                filename = f"content-{datetime.now().strftime('%Y%m%d-%H%M%S')}.{'md' if is_md else 'txt'}"
+                bio = BytesIO((text if not is_md else text.replace('```', '')).encode('utf-8'))
+                bio.name = filename
+                await bot.send_document(chat_id=chat_id, document=bio, filename=filename, caption="התוכן ארוך ונשלח כקובץ")
+                return
+            except Exception:
+                pass
+            # Last resort: split and send without parse mode
+            MAX_LEN = 4000
+            for i in range(0, len(text), MAX_LEN):
+                await bot.send_message(chat_id=chat_id, text=text[i:i+MAX_LEN])
+        elif "can't parse entities" in msg or 'parse' in msg:
+            # Retry without parse mode
+            await bot.send_message(chat_id=chat_id, text=text)
+        else:
+            raise
 
 # --- Flask App for Render Health Check ---
 flask_app = Flask('')
@@ -261,10 +296,8 @@ class SaveMeBot:
 
         # Show the content (rendered/escaped) instead of sending a file
         preview_text, parse_mode = format_text_content_for_telegram(text)
-        if parse_mode:
-            await update.message.reply_text(preview_text, parse_mode=parse_mode)
-        else:
-            await update.message.reply_text(preview_text)
+        chat_id = update.effective_chat.id
+        await send_text_resilient(context.bot, chat_id, preview_text, parse_mode)
 
         # Additionally send as a .md file so the user can open with a Markdown viewer
         try:
@@ -321,14 +354,24 @@ class SaveMeBot:
         content_type = item.get('content_type')
         if content_type == 'text' or (content_type == 'document' and (item.get('file_name', '').endswith('.md')) and (item.get('content') is not None and item.get('content') != '')):
             text_to_send, parse_mode = format_text_content_for_telegram(item.get('content', ''))
-            if parse_mode:
-                await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=text_to_send)
+            await send_text_resilient(context.bot, chat_id, text_to_send, parse_mode)
         elif content_type and item.get('file_id'):
-            send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
+            send_map = {
+                'photo': context.bot.send_photo,
+                'document': context.bot.send_document,
+                'video': context.bot.send_video,
+                'voice': context.bot.send_voice
+            }
             if content_type in send_map:
-                await send_map[content_type](chat_id=chat_id, **{content_type: item['file_id'], 'caption': item.get('caption', '')})
+                try:
+                    await send_map[content_type](
+                        chat_id=chat_id,
+                        **{content_type: item['file_id'], 'caption': item.get('caption', '')}
+                    )
+                except BadRequest as e:
+                    await context.bot.send_message(chat_id=chat_id, text=f"⚠️ שגיאה בשליחת התוכן: {str(e)}")
+                except Exception:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ שגיאה בלתי צפויה בשליחת התוכן.")
 
     # --- All other class methods from your bot logic go here ---
     # (show_categories, handle_search, receive_content, receive_category, save_note, etc.)
