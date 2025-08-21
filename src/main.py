@@ -13,7 +13,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
+from telegram.error import Conflict, NetworkError, Forbidden, TimedOut, BadRequest
 
 from database.database_manager import Database
 from activity_reporter import create_reporter
@@ -293,10 +293,17 @@ class SaveMeBot:
             for chunk in split_text_for_telegram(text):
                 await update.message.reply_text(chunk)
         else:
-            # Very long: show partial preview and inform about file
+            # Very long: show partial preview with safe Markdown attempt and fallback
             preview = text[:PREVIEW_THRESHOLD_CHARS]
-            # Send truncated preview as plain text to avoid parse errors from cut Markdown/entities
-            await update.message.reply_text(preview)
+            preview_text, parse_mode = format_text_content_for_telegram(preview)
+            try:
+                if parse_mode:
+                    await update.message.reply_text(preview_text, parse_mode=parse_mode)
+                else:
+                    await update.message.reply_text(preview_text)
+            except BadRequest:
+                # Fallback to plain text if markdown entities are broken due to truncation
+                await update.message.reply_text(preview)
             await update.message.reply_text("הטקסט ארוך מאוד, נשלח גם כקובץ להורדה.")
 
         # Additionally send as a .md file so the user can open with a Markdown viewer
@@ -512,9 +519,16 @@ class SaveMeBot:
                 if not text:
                     await context.bot.send_message(chat_id=chat_id, text="אין תוכן להצגה.")
                     return SELECTING_ACTION
-                # Send truncated preview as plain text to avoid parse errors from cut Markdown/entities
+                # Try formatted preview with safe fallback to plain text
                 preview = text[:PREVIEW_THRESHOLD_CHARS]
-                await context.bot.send_message(chat_id=chat_id, text=preview)
+                preview_text, parse_mode = format_text_content_for_telegram(preview)
+                try:
+                    if parse_mode:
+                        await context.bot.send_message(chat_id=chat_id, text=preview_text, parse_mode=parse_mode)
+                    else:
+                        await context.bot.send_message(chat_id=chat_id, text=preview_text)
+                except BadRequest:
+                    await context.bot.send_message(chat_id=chat_id, text=preview)
                 if len(text) > PREVIEW_THRESHOLD_CHARS:
                     await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'העתק הכל' או 'הורדה'.")
                 return SELECTING_ACTION
