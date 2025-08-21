@@ -6,6 +6,7 @@ from flask import Flask
 from typing import Dict, Any
 import re
 from io import BytesIO
+import html
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
@@ -13,7 +14,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict, NetworkError, Forbidden, TimedOut
+from telegram.error import Conflict, NetworkError, Forbidden, TimedOut, BadRequest
 
 from database.database_manager import Database
 from activity_reporter import create_reporter
@@ -68,6 +69,39 @@ def detect_code_language(text: str) -> str | None:
     except Exception:
         return None
 
+# Detect if full text is a fenced code block
+def is_fenced_code_block(text: str) -> bool:
+    try:
+        sample = text.strip()
+        if not (sample.startswith('```') and sample.endswith('```')):
+            return False
+        # ensure at least opening and closing fence present
+        return sample.count('```') >= 2
+    except Exception:
+        return False
+
+# Extract code and optional language from a fenced code block
+def extract_fenced_code(text: str) -> tuple[str, str | None]:
+    try:
+        sample = text.strip()
+        m = re.match(r'^```([a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```\s*$', sample)
+        if m:
+            lang = m.group(1) or None
+            code = m.group(2)
+            return code, lang
+        # Fallback: remove first and last fence line
+        if sample.startswith('```') and sample.endswith('```'):
+            lines = sample.splitlines()
+            if len(lines) >= 2:
+                first = lines[0]
+                last = lines[-1]
+                if first.startswith('```') and last.strip() == '```':
+                    code = '\n'.join(lines[1:-1])
+                    return code, None
+        return text, None
+    except Exception:
+        return text, None
+
 # Helper to format text content to preserve code/Markdown rendering in Telegram
 def format_text_content_for_telegram(text: str):
     """Return (formatted_text, parse_mode) for Telegram so code/Markdown is preserved.
@@ -78,8 +112,9 @@ def format_text_content_for_telegram(text: str):
     - Otherwise, send as plain text (no parse mode).
     """
     try:
-        if '```' in text:
-            return text, ParseMode.MARKDOWN
+        if is_fenced_code_block(text):
+            # Proper fenced code block: use MarkdownV2 to get native code UI
+            return text, ParseMode.MARKDOWN_V2
 
         # Detect Markdown-like content (should be rendered, not shown as code)
         markdown_patterns = [
@@ -293,13 +328,17 @@ class SaveMeBot:
             for chunk in split_text_for_telegram(text):
                 await update.message.reply_text(chunk)
         else:
-            # Very long: show partial preview and inform about file
+            # Very long: show partial preview with safe Markdown attempt and fallback
             preview = text[:PREVIEW_THRESHOLD_CHARS]
             preview_text, parse_mode = format_text_content_for_telegram(preview)
-            if parse_mode:
-                await update.message.reply_text(preview_text, parse_mode=parse_mode)
-            else:
-                await update.message.reply_text(preview_text)
+            try:
+                if parse_mode:
+                    await update.message.reply_text(preview_text, parse_mode=parse_mode)
+                else:
+                    await update.message.reply_text(preview_text)
+            except BadRequest:
+                # Fallback to plain text if markdown entities are broken due to truncation
+                await update.message.reply_text(preview)
             await update.message.reply_text("הטקסט ארוך מאוד, נשלח גם כקובץ להורדה.")
 
         # Additionally send as a .md file so the user can open with a Markdown viewer
@@ -354,13 +393,16 @@ class SaveMeBot:
         text_len = len(text_content)
 
         content_buttons = []
-        if content_type == 'text' or (content_type == 'document' and file_name.endswith('.md') and text_len > 0):
+        is_textual = content_type == 'text' or (content_type == 'document' and file_name.endswith('.md') and text_len > 0)
+        if is_textual:
             content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
             if text_len > VERY_LONG_THRESHOLD_CHARS:
                 content_buttons.insert(0, InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"preview_{item_id}"))
                 content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
             else:
                 content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+            # Add copy code button when content is a fenced code block
+            # No extra button; native Telegram UI handles code copy within the message
         elif content_type == 'document' and file_id:
             content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
 
@@ -387,8 +429,21 @@ class SaveMeBot:
                 else:
                     await context.bot.send_message(chat_id=chat_id, text=text_to_send)
             elif text_len <= VERY_LONG_THRESHOLD_CHARS:
-                for chunk in split_text_for_telegram(text_content):
-                    await context.bot.send_message(chat_id=chat_id, text=chunk)
+                if is_fenced_code_block(text_content):
+                    code, lang = extract_fenced_code(text_content)
+                    # Leave headroom for fences and language prefix
+                    safe_limit = max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(code, max_chars=safe_limit):
+                        fenced = f"```{lang or ''}\n{chunk}\n```"
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
+                        except BadRequest:
+                            escaped = html.escape(chunk)
+                            html_block = f"<pre><code>{escaped}</code></pre>"
+                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                else:
+                    for chunk in split_text_for_telegram(text_content):
+                        await context.bot.send_message(chat_id=chat_id, text=chunk)
             else:
                 await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
         elif content_type and item.get('file_id'):
@@ -503,7 +558,7 @@ class SaveMeBot:
             return SELECTING_ACTION
 
         # New: content operations
-        if action in ['preview', 'copyall', 'download']:
+        if action in ['preview', 'copyall', 'copycode', 'download']:
             item = self.db.get_item(item_id)
             if not item:
                 await query.edit_message_text("הפריט לא קיים עוד.")
@@ -515,12 +570,16 @@ class SaveMeBot:
                 if not text:
                     await context.bot.send_message(chat_id=chat_id, text="אין תוכן להצגה.")
                     return SELECTING_ACTION
+                # Try formatted preview with safe fallback to plain text
                 preview = text[:PREVIEW_THRESHOLD_CHARS]
                 preview_text, parse_mode = format_text_content_for_telegram(preview)
-                if parse_mode:
-                    await context.bot.send_message(chat_id=chat_id, text=preview_text, parse_mode=parse_mode)
-                else:
-                    await context.bot.send_message(chat_id=chat_id, text=preview_text)
+                try:
+                    if parse_mode:
+                        await context.bot.send_message(chat_id=chat_id, text=preview_text, parse_mode=parse_mode)
+                    else:
+                        await context.bot.send_message(chat_id=chat_id, text=preview_text)
+                except BadRequest:
+                    await context.bot.send_message(chat_id=chat_id, text=preview)
                 if len(text) > PREVIEW_THRESHOLD_CHARS:
                     await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'העתק הכל' או 'הורדה'.")
                 return SELECTING_ACTION
@@ -530,9 +589,23 @@ class SaveMeBot:
                 if not text:
                     await context.bot.send_message(chat_id=chat_id, text="אין טקסט להעתקה.")
                     return SELECTING_ACTION
-                for chunk in split_text_for_telegram(text):
-                    await context.bot.send_message(chat_id=chat_id, text=chunk)
+                if is_fenced_code_block(text):
+                    code, lang = extract_fenced_code(text)
+                    safe_limit = max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(code, max_chars=safe_limit):
+                        fenced = f"```{lang or ''}\n{chunk}\n```"
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
+                        except BadRequest:
+                            escaped = html.escape(chunk)
+                            html_block = f"<pre><code>{escaped}</code></pre>"
+                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                else:
+                    for chunk in split_text_for_telegram(text):
+                        await context.bot.send_message(chat_id=chat_id, text=chunk)
                 return SELECTING_ACTION
+
+            # copycode no longer needed; using native code rendering in show/copyall flows
 
             if action == 'download':
                 if item.get('file_id') and item.get('content_type') == 'document':
