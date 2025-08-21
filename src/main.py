@@ -112,8 +112,9 @@ def format_text_content_for_telegram(text: str):
     - Otherwise, send as plain text (no parse mode).
     """
     try:
-        if '```' in text:
-            return text, ParseMode.MARKDOWN
+        if is_fenced_code_block(text):
+            # Proper fenced code block: use MarkdownV2 to get native code UI
+            return text, ParseMode.MARKDOWN_V2
 
         # Detect Markdown-like content (should be rendered, not shown as code)
         markdown_patterns = [
@@ -401,8 +402,7 @@ class SaveMeBot:
             else:
                 content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
             # Add copy code button when content is a fenced code block
-            if text_len > 0 and is_fenced_code_block(text_content):
-                content_buttons.append(InlineKeyboardButton("📋 העתק קוד", callback_data=f"copycode_{item_id}"))
+            # No extra button; native Telegram UI handles code copy within the message
         elif content_type == 'document' and file_id:
             content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
 
@@ -429,8 +429,21 @@ class SaveMeBot:
                 else:
                     await context.bot.send_message(chat_id=chat_id, text=text_to_send)
             elif text_len <= VERY_LONG_THRESHOLD_CHARS:
-                for chunk in split_text_for_telegram(text_content):
-                    await context.bot.send_message(chat_id=chat_id, text=chunk)
+                if is_fenced_code_block(text_content):
+                    code, lang = extract_fenced_code(text_content)
+                    # Leave headroom for fences and language prefix
+                    safe_limit = max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(code, max_chars=safe_limit):
+                        fenced = f"```{lang or ''}\n{chunk}\n```"
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
+                        except BadRequest:
+                            escaped = html.escape(chunk)
+                            html_block = f"<pre><code>{escaped}</code></pre>"
+                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                else:
+                    for chunk in split_text_for_telegram(text_content):
+                        await context.bot.send_message(chat_id=chat_id, text=chunk)
             else:
                 await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
         elif content_type and item.get('file_id'):
@@ -576,28 +589,23 @@ class SaveMeBot:
                 if not text:
                     await context.bot.send_message(chat_id=chat_id, text="אין טקסט להעתקה.")
                     return SELECTING_ACTION
-                for chunk in split_text_for_telegram(text):
-                    await context.bot.send_message(chat_id=chat_id, text=chunk)
-                return SELECTING_ACTION
-
-            if action == 'copycode':
-                text = item.get('content') or ''
-                if not text:
-                    await context.bot.send_message(chat_id=chat_id, text="אין קוד להעתקה.")
-                    return SELECTING_ACTION
                 if is_fenced_code_block(text):
                     code, lang = extract_fenced_code(text)
+                    safe_limit = max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(code, max_chars=safe_limit):
+                        fenced = f"```{lang or ''}\n{chunk}\n```"
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
+                        except BadRequest:
+                            escaped = html.escape(chunk)
+                            html_block = f"<pre><code>{escaped}</code></pre>"
+                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
                 else:
-                    code, lang = text, detect_code_language(text)
-                # Prefer Markdown fenced code, fallback to HTML pre/code
-                fenced = f"```{lang or ''}\n{code}\n```"
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN)
-                except BadRequest:
-                    escaped = html.escape(code)
-                    html_block = f"<pre><code>{escaped}</code></pre>"
-                    await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                    for chunk in split_text_for_telegram(text):
+                        await context.bot.send_message(chat_id=chat_id, text=chunk)
                 return SELECTING_ACTION
+
+            # copycode no longer needed; using native code rendering in show/copyall flows
 
             if action == 'download':
                 if item.get('file_id') and item.get('content_type') == 'document':
@@ -686,7 +694,7 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|copycode_|download_)" )
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_)" )
             ],
             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
             AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
