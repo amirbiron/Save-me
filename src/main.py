@@ -88,7 +88,7 @@ def format_text_content_for_telegram(text: str):
             r'\*\*[^\n]+\*\*',              # bold
             r'__[^\n]+__',                      # bold (alt)
             r'(?<!\*)\*[^\n]+\*(?!\*)',     # italic
-            r'_(?:[^\n_]|_[^\n])+_',          # italic (alt)
+            r'_(?:[^\n_]|_[^\n])_',          # italic (alt)
             r'\[[^\]]+\]\([^\)]+\)',       # links [text](url)
         ]
         if any(re.search(p, text, re.MULTILINE) for p in markdown_patterns):
@@ -128,6 +128,29 @@ logger = logging.getLogger(__name__)
 
 # Conversation States
 SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART = range(10)
+
+# --- Display/length thresholds and helpers ---
+TELEGRAM_MAX_MESSAGE_CHARS = 4000
+PREVIEW_THRESHOLD_CHARS = 3500
+VERY_LONG_THRESHOLD_CHARS = 12000
+
+def split_text_for_telegram(text: str, max_chars: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
+    """Split text into chunks under Telegram message limit, preferring line boundaries."""
+    if not text:
+        return [""]
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        if end < len(text):
+            nl = text.rfind('\n', start, end)
+            if nl != -1 and nl > start + 100:
+                end = nl + 1
+        chunks.append(text[start:end])
+        start = end
+    return chunks
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -259,12 +282,25 @@ class SaveMeBot:
             await update.message.reply_text("לא התקבל טקסט. שלח טקסט רגיל להמרה.")
             return AWAIT_MD_TEXT
 
-        # Show the content (rendered/escaped) instead of sending a file
-        preview_text, parse_mode = format_text_content_for_telegram(text)
-        if parse_mode:
-            await update.message.reply_text(preview_text, parse_mode=parse_mode)
+        # Smart display based on length
+        if len(text) <= PREVIEW_THRESHOLD_CHARS:
+            preview_text, parse_mode = format_text_content_for_telegram(text)
+            if parse_mode:
+                await update.message.reply_text(preview_text, parse_mode=parse_mode)
+            else:
+                await update.message.reply_text(preview_text)
+        elif len(text) <= VERY_LONG_THRESHOLD_CHARS:
+            for chunk in split_text_for_telegram(text):
+                await update.message.reply_text(chunk)
         else:
-            await update.message.reply_text(preview_text)
+            # Very long: show partial preview and inform about file
+            preview = text[:PREVIEW_THRESHOLD_CHARS]
+            preview_text, parse_mode = format_text_content_for_telegram(preview)
+            if parse_mode:
+                await update.message.reply_text(preview_text, parse_mode=parse_mode)
+            else:
+                await update.message.reply_text(preview_text)
+            await update.message.reply_text("הטקסט ארוך מאוד, נשלח גם כקובץ להורדה.")
 
         # Additionally send as a .md file so the user can open with a Markdown viewer
         try:
@@ -308,8 +344,30 @@ class SaveMeBot:
             [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}")],
             [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
-            [InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")]
         ]
+
+        # Content-aware action row
+        content_type = item.get('content_type')
+        file_id = item.get('file_id') or ''
+        file_name = item.get('file_name') or ''
+        text_content = item.get('content') or ''
+        text_len = len(text_content)
+
+        content_buttons = []
+        if content_type == 'text' or (content_type == 'document' and file_name.endswith('.md') and text_len > 0):
+            content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+            if text_len > VERY_LONG_THRESHOLD_CHARS:
+                content_buttons.insert(0, InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"preview_{item_id}"))
+                content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+            else:
+                content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+        elif content_type == 'document' and file_id:
+            content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+
+        if content_buttons:
+            keyboard.append(content_buttons)
+
+        keyboard.append([InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         chat_id = update_or_query.message.chat.id
@@ -320,11 +378,19 @@ class SaveMeBot:
 
         content_type = item.get('content_type')
         if content_type == 'text' or (content_type == 'document' and (item.get('file_name', '').endswith('.md')) and (item.get('content') is not None and item.get('content') != '')):
-            text_to_send, parse_mode = format_text_content_for_telegram(item.get('content', ''))
-            if parse_mode:
-                await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
+            if text_len == 0:
+                pass
+            elif text_len <= PREVIEW_THRESHOLD_CHARS:
+                text_to_send, parse_mode = format_text_content_for_telegram(text_content)
+                if parse_mode:
+                    await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=text_to_send)
+            elif text_len <= VERY_LONG_THRESHOLD_CHARS:
+                for chunk in split_text_for_telegram(text_content):
+                    await context.bot.send_message(chat_id=chat_id, text=chunk)
             else:
-                await context.bot.send_message(chat_id=chat_id, text=text_to_send)
+                await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
         elif content_type and item.get('file_id'):
             send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
             if content_type in send_map:
@@ -436,6 +502,61 @@ class SaveMeBot:
             await self.show_item_with_actions(query, context, item_id)
             return SELECTING_ACTION
 
+        # New: content operations
+        if action in ['preview', 'copyall', 'download']:
+            item = self.db.get_item(item_id)
+            if not item:
+                await query.edit_message_text("הפריט לא קיים עוד.")
+                return SELECTING_ACTION
+            chat_id = query.message.chat.id
+
+            if action == 'preview':
+                text = item.get('content') or ''
+                if not text:
+                    await context.bot.send_message(chat_id=chat_id, text="אין תוכן להצגה.")
+                    return SELECTING_ACTION
+                preview = text[:PREVIEW_THRESHOLD_CHARS]
+                preview_text, parse_mode = format_text_content_for_telegram(preview)
+                if parse_mode:
+                    await context.bot.send_message(chat_id=chat_id, text=preview_text, parse_mode=parse_mode)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=preview_text)
+                if len(text) > PREVIEW_THRESHOLD_CHARS:
+                    await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'העתק הכל' או 'הורדה'.")
+                return SELECTING_ACTION
+
+            if action == 'copyall':
+                text = item.get('content') or ''
+                if not text:
+                    await context.bot.send_message(chat_id=chat_id, text="אין טקסט להעתקה.")
+                    return SELECTING_ACTION
+                for chunk in split_text_for_telegram(text):
+                    await context.bot.send_message(chat_id=chat_id, text=chunk)
+                return SELECTING_ACTION
+
+            if action == 'download':
+                if item.get('file_id') and item.get('content_type') == 'document':
+                    try:
+                        await context.bot.send_document(chat_id=chat_id, document=item['file_id'], caption=item.get('caption', ''))
+                    except Exception:
+                        await context.bot.send_message(chat_id=chat_id, text="שגיאה בשליחת הקובץ המקורי. נשלח כטקסט.")
+                        text = item.get('content') or ''
+                        if text:
+                            md_bytes = BytesIO(text.encode('utf-8'))
+                            md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+                            await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
+                else:
+                    text = item.get('content') or ''
+                    if not text:
+                        await context.bot.send_message(chat_id=chat_id, text="אין תוכן להורדה.")
+                        return SELECTING_ACTION
+                    md_bytes = BytesIO(text.encode('utf-8'))
+                    looks_md = '```' in text or re.search(r'(^|\n)#{1,6}\s', text)
+                    ext = 'md' if looks_md else 'txt'
+                    md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+                    await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
+                return SELECTING_ACTION
+
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
         elif action == 'edit': await query.edit_message_text("שלח את התוכן החדש:"); return AWAIT_EDIT
@@ -492,29 +613,29 @@ def main() -> None:
         entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help)],
         states={
                          SELECTING_ACTION: [
-                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
-                 MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
-                 MessageHandler(filters.TEXT & filters.Regex('^🧩 איסוף טקסט רב-הודעות$'), bot.start_multipart),
-                 MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
-                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
-                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
-                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
-                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                 CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_)")
-             ],
-             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
-             AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
-             AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
-             AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
-             AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
-             AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
-             AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
-             AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)],
-             AWAIT_MULTIPART: [
-                 CallbackQueryHandler(bot.multipart_router, pattern='^(multipart_end|multipart_cancel)$'),
-                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.multipart_router)
-             ]
-         },
+                MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
+                MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
+                MessageHandler(filters.TEXT & filters.Regex('^🧩 איסוף טקסט רב-הודעות$'), bot.start_multipart),
+                MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
+                MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
+                MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
+                CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
+                CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_)" )
+            ],
+            AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
+            AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
+            AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
+            AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
+            AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
+            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
+            AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
+            AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)],
+            AWAIT_MULTIPART: [
+                CallbackQueryHandler(bot.multipart_router, pattern='^(multipart_end|multipart_cancel)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.multipart_router)
+            ]
+        },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
     )
