@@ -295,11 +295,8 @@ class SaveMeBot:
         else:
             # Very long: show partial preview and inform about file
             preview = text[:PREVIEW_THRESHOLD_CHARS]
-            preview_text, parse_mode = format_text_content_for_telegram(preview)
-            if parse_mode:
-                await update.message.reply_text(preview_text, parse_mode=parse_mode)
-            else:
-                await update.message.reply_text(preview_text)
+            # Send truncated preview as plain text to avoid parse errors from cut Markdown/entities
+            await update.message.reply_text(preview)
             await update.message.reply_text("הטקסט ארוך מאוד, נשלח גם כקובץ להורדה.")
 
         # Additionally send as a .md file so the user can open with a Markdown viewer
@@ -515,12 +512,9 @@ class SaveMeBot:
                 if not text:
                     await context.bot.send_message(chat_id=chat_id, text="אין תוכן להצגה.")
                     return SELECTING_ACTION
+                # Send truncated preview as plain text to avoid parse errors from cut Markdown/entities
                 preview = text[:PREVIEW_THRESHOLD_CHARS]
-                preview_text, parse_mode = format_text_content_for_telegram(preview)
-                if parse_mode:
-                    await context.bot.send_message(chat_id=chat_id, text=preview_text, parse_mode=parse_mode)
-                else:
-                    await context.bot.send_message(chat_id=chat_id, text=preview_text)
+                await context.bot.send_message(chat_id=chat_id, text=preview)
                 if len(text) > PREVIEW_THRESHOLD_CHARS:
                     await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'העתק הכל' או 'הורדה'.")
                 return SELECTING_ACTION
