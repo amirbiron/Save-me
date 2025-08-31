@@ -122,15 +122,14 @@ def format_text_content_for_telegram(text: str):
             fence = f"```{lang}\n{text}\n```"
             return fence, ParseMode.MARKDOWN_V2
 
-        # If content contains fenced code markers anywhere, prefer MarkdownV2 so Telegram renders blocks
-        try:
-            if text.count('```') >= 2:
-                return text, ParseMode.MARKDOWN_V2
-        except Exception:
-            pass
+        # PRIORITY 1: If content contains triple backticks ANYWHERE, always use MarkdownV2
+        # This ensures code blocks are preserved and displayed properly
+        if '```' in text:
+            # Use MARKDOWN_V2 for better code block support
+            return text, ParseMode.MARKDOWN_V2
 
+        # If it's already a properly fenced code block
         if is_fenced_code_block(text):
-            # Proper fenced code block: use MarkdownV2 to get native code UI
             return text, ParseMode.MARKDOWN_V2
 
         # Detect Markdown-like content (should be rendered, not shown as code)
@@ -144,7 +143,8 @@ def format_text_content_for_telegram(text: str):
             r'\[[^\]]+\]\([^\)]+\)',       # links [text](url)
         ]
         if any(re.search(p, text, re.MULTILINE) for p in markdown_patterns):
-            return text, ParseMode.MARKDOWN
+            # If it has markdown patterns, keep it as markdown
+            return text, ParseMode.MARKDOWN_V2
 
         # Detect code-like content (should be fenced)
         code_patterns = [
@@ -157,7 +157,12 @@ def format_text_content_for_telegram(text: str):
             fence = f"```{lang}\n{text}\n```"
             return fence, ParseMode.MARKDOWN_V2
 
-        return text, None
+        # Default: If no special formatting detected, wrap in code block for consistent display
+        # This ensures saved content is always displayed as code blocks
+        lang = detect_code_language(text) or ''
+        fence = f"```{lang}\n{text}\n```"
+        return fence, ParseMode.MARKDOWN_V2
+        
     except Exception:
         return text, None
 
@@ -192,7 +197,8 @@ MAX_REMINDER_HOURS = int(os.environ.get('MAX_REMINDER_HOURS', '168'))
 LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Asia/Jerusalem'))
 
 # Global flag: force wrapping all textual content in fenced code blocks
-FORCE_CODE_BLOCKS = os.environ.get('FORCE_CODE_BLOCKS', 'false').lower() == 'true'
+# Set to 'true' to always display saved content as code blocks
+FORCE_CODE_BLOCKS = os.environ.get('FORCE_CODE_BLOCKS', 'true').lower() == 'true'
 
 def split_text_for_telegram(text: str, max_chars: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
     """Split text into chunks under Telegram message limit, preferring line boundaries."""
