@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import calendar
 from flask import Flask
 from typing import Dict, Any
@@ -173,6 +174,7 @@ VERY_LONG_THRESHOLD_CHARS = 12000
 # Reminder bounds (fallback to env if provided)
 MIN_REMINDER_HOURS = int(os.environ.get('MIN_REMINDER_HOURS', '1'))
 MAX_REMINDER_HOURS = int(os.environ.get('MAX_REMINDER_HOURS', '168'))
+LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Asia/Jerusalem'))
 
 def split_text_for_telegram(text: str, max_chars: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
     """Split text into chunks under Telegram message limit, preferring line boundaries."""
@@ -219,7 +221,7 @@ class SaveMeBot:
         if not item_id:
             await update.message.reply_text("אין פריט ממתין.")
             return SELECTING_ACTION
-        remind_at = datetime.now() + timedelta(hours=hours)
+        remind_at = datetime.now(tz=LOCAL_TZ).replace(tzinfo=None) + timedelta(hours=hours)
         ok = self.db.set_reminder(int(item_id), remind_at)
         if ok:
             await update.message.reply_text(f"⏰ נקבעה תזכורת בעוד {hours} שעות.")
@@ -284,7 +286,7 @@ class SaveMeBot:
         return InlineKeyboardMarkup(rows)
 
     async def open_calendar(self, query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
-        now = datetime.now()
+        now = datetime.now(tz=LOCAL_TZ)
         markup = self._build_calendar_markup(item_id, now.year, now.month)
         await query.edit_message_reply_markup(reply_markup=markup)
 
@@ -509,7 +511,7 @@ class SaveMeBot:
         # Additionally send as a .md file so the user can open with a Markdown viewer
         try:
             md_bytes = BytesIO(text.encode('utf-8'))
-            md_bytes.name = f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+            md_bytes.name = f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
             await update.message.reply_document(document=md_bytes, filename=md_bytes.name, caption="קובץ Markdown")
         except Exception:
             # Ignore file send failures; preview already sent
@@ -816,7 +818,7 @@ class SaveMeBot:
                         text = item.get('content') or ''
                         if text:
                             md_bytes = BytesIO(text.encode('utf-8'))
-                            md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+                            md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.txt"
                             await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
                 else:
                     text = item.get('content') or ''
@@ -826,7 +828,7 @@ class SaveMeBot:
                     md_bytes = BytesIO(text.encode('utf-8'))
                     looks_md = '```' in text or re.search(r'(^|\n)#{1,6}\s', text)
                     ext = 'md' if looks_md else 'txt'
-                    md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+                    md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.{ext}"
                     await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
                 return SELECTING_ACTION
 
@@ -863,7 +865,7 @@ class SaveMeBot:
                 await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאת תזכורת.")
                 return SELECTING_ACTION
             hours = max(MIN_REMINDER_HOURS, min(MAX_REMINDER_HOURS, hours))
-            remind_at = datetime.now() + timedelta(hours=hours)
+            remind_at = datetime.now(tz=LOCAL_TZ).replace(tzinfo=None) + timedelta(hours=hours)
             ok = self.db.set_reminder(item_id, remind_at)
             if ok:
                 await context.bot.send_message(chat_id=query.message.chat.id, text=f"⏰ נקבעה תזכורת בעוד {hours} שעות.")
