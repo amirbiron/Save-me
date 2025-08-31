@@ -25,3 +25,5 @@ services:
         value: 168
       - key: MIN_REMINDER_HOURS
         value: 1
+      - key: FORCE_CODE_BLOCKS
+        value: true

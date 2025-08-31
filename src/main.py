@@ -114,6 +114,14 @@ def format_text_content_for_telegram(text: str):
     - Otherwise, send as plain text (no parse mode).
     """
     try:
+        # Global override to force code block rendering for all text
+        if 'FORCE_CODE_BLOCKS' in globals() and FORCE_CODE_BLOCKS:
+            if is_fenced_code_block(text):
+                return text, ParseMode.MARKDOWN_V2
+            lang = detect_code_language(text) or ''
+            fence = f"```{lang}\n{text}\n```"
+            return fence, ParseMode.MARKDOWN_V2
+
         if is_fenced_code_block(text):
             # Proper fenced code block: use MarkdownV2 to get native code UI
             return text, ParseMode.MARKDOWN_V2
@@ -175,6 +183,9 @@ VERY_LONG_THRESHOLD_CHARS = 12000
 MIN_REMINDER_HOURS = int(os.environ.get('MIN_REMINDER_HOURS', '1'))
 MAX_REMINDER_HOURS = int(os.environ.get('MAX_REMINDER_HOURS', '168'))
 LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Asia/Jerusalem'))
+
+# Global flag: force wrapping all textual content in fenced code blocks
+FORCE_CODE_BLOCKS = os.environ.get('FORCE_CODE_BLOCKS', 'false').lower() == 'true'
 
 def split_text_for_telegram(text: str, max_chars: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
     """Split text into chunks under Telegram message limit, preferring line boundaries."""
@@ -492,8 +503,13 @@ class SaveMeBot:
             else:
                 await update.message.reply_text(preview_text)
         elif len(text) <= VERY_LONG_THRESHOLD_CHARS:
-            for chunk in split_text_for_telegram(text):
-                await update.message.reply_text(chunk)
+            safe_limit = TELEGRAM_MAX_MESSAGE_CHARS if not ("FORCE_CODE_BLOCKS" in globals() and FORCE_CODE_BLOCKS) else max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+            for chunk in split_text_for_telegram(text, max_chars=safe_limit):
+                chunk_text, chunk_parse_mode = format_text_content_for_telegram(chunk)
+                if chunk_parse_mode:
+                    await update.message.reply_text(chunk_text, parse_mode=chunk_parse_mode)
+                else:
+                    await update.message.reply_text(chunk_text)
         else:
             # Very long: show partial preview with safe Markdown attempt and fallback
             preview = text[:PREVIEW_THRESHOLD_CHARS]
@@ -610,8 +626,13 @@ class SaveMeBot:
                             html_block = f"<pre><code>{escaped}</code></pre>"
                             await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
                 else:
-                    for chunk in split_text_for_telegram(text_content):
-                        await context.bot.send_message(chat_id=chat_id, text=chunk)
+                    safe_limit = TELEGRAM_MAX_MESSAGE_CHARS if not ("FORCE_CODE_BLOCKS" in globals() and FORCE_CODE_BLOCKS) else max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(text_content, max_chars=safe_limit):
+                        chunk_text, chunk_parse_mode = format_text_content_for_telegram(chunk)
+                        if chunk_parse_mode:
+                            await context.bot.send_message(chat_id=chat_id, text=chunk_text, parse_mode=chunk_parse_mode)
+                        else:
+                            await context.bot.send_message(chat_id=chat_id, text=chunk_text)
             else:
                 await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
         elif content_type and item.get('file_id'):
@@ -803,8 +824,13 @@ class SaveMeBot:
                             html_block = f"<pre><code>{escaped}</code></pre>"
                             await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
                 else:
-                    for chunk in split_text_for_telegram(text):
-                        await context.bot.send_message(chat_id=chat_id, text=chunk)
+                    safe_limit = TELEGRAM_MAX_MESSAGE_CHARS if not ("FORCE_CODE_BLOCKS" in globals() and FORCE_CODE_BLOCKS) else max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
+                    for chunk in split_text_for_telegram(text, max_chars=safe_limit):
+                        chunk_text, chunk_parse_mode = format_text_content_for_telegram(chunk)
+                        if chunk_parse_mode:
+                            await context.bot.send_message(chat_id=chat_id, text=chunk_text, parse_mode=chunk_parse_mode)
+                        else:
+                            await context.bot.send_message(chat_id=chat_id, text=chunk_text)
                 return SELECTING_ACTION
 
             # copycode no longer needed; using native code rendering in show/copyall flows
