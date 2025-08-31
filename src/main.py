@@ -122,6 +122,13 @@ def format_text_content_for_telegram(text: str):
             fence = f"```{lang}\n{text}\n```"
             return fence, ParseMode.MARKDOWN_V2
 
+        # If content contains fenced code markers anywhere, prefer MarkdownV2 so Telegram renders blocks
+        try:
+            if text.count('```') >= 2:
+                return text, ParseMode.MARKDOWN_V2
+        except Exception:
+            pass
+
         if is_fenced_code_block(text):
             # Proper fenced code block: use MarkdownV2 to get native code UI
             return text, ParseMode.MARKDOWN_V2
@@ -148,7 +155,7 @@ def format_text_content_for_telegram(text: str):
         if any(re.search(pattern, text) for pattern in code_patterns):
             lang = detect_code_language(text) or ''
             fence = f"```{lang}\n{text}\n```"
-            return fence, ParseMode.MARKDOWN
+            return fence, ParseMode.MARKDOWN_V2
 
         return text, None
     except Exception:
