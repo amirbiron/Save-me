@@ -1,7 +1,9 @@
 import os
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import calendar
 from flask import Flask
 from typing import Dict, Any
 import re
@@ -162,12 +164,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART = range(10)
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART, AWAIT_REMINDER_HOURS, AWAIT_REMINDER_TIME = range(12)
 
 # --- Display/length thresholds and helpers ---
 TELEGRAM_MAX_MESSAGE_CHARS = 4000
 PREVIEW_THRESHOLD_CHARS = 3500
 VERY_LONG_THRESHOLD_CHARS = 12000
+
+# Reminder bounds (fallback to env if provided)
+MIN_REMINDER_HOURS = int(os.environ.get('MIN_REMINDER_HOURS', '1'))
+MAX_REMINDER_HOURS = int(os.environ.get('MAX_REMINDER_HOURS', '168'))
+LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Asia/Jerusalem'))
 
 def split_text_for_telegram(text: str, max_chars: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
     """Split text into chunks under Telegram message limit, preferring line boundaries."""
@@ -197,6 +204,166 @@ class SaveMeBot:
     def __init__(self):
         db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
+        self._start_reminder_job = False
+
+    async def reminder_hours_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle custom reminder hours entry."""
+        self._report(update)
+        text = (update.message.text or '').strip()
+        if not text.isdigit():
+            await update.message.reply_text(f"יש להזין מספר שעות תקין ({MIN_REMINDER_HOURS}-{MAX_REMINDER_HOURS}).")
+            return AWAIT_REMINDER_HOURS
+        hours = int(text)
+        if hours < MIN_REMINDER_HOURS or hours > MAX_REMINDER_HOURS:
+            await update.message.reply_text(f"המספר מחוץ לטווח. בחר בין {MIN_REMINDER_HOURS}-{MAX_REMINDER_HOURS}.")
+            return AWAIT_REMINDER_HOURS
+        item_id = context.user_data.get('pending_reminder_item_id')
+        if not item_id:
+            await update.message.reply_text("אין פריט ממתין.")
+            return SELECTING_ACTION
+        remind_at = datetime.now(tz=LOCAL_TZ).replace(tzinfo=None) + timedelta(hours=hours)
+        ok = self.db.set_reminder(int(item_id), remind_at)
+        if ok:
+            await update.message.reply_text(f"⏰ נקבעה תזכורת בעוד {hours} שעות.")
+        else:
+            await update.message.reply_text("שגיאה בקביעת תזכורת.")
+        context.user_data.pop('pending_reminder_item_id', None)
+        return SELECTING_ACTION
+
+    async def reminder_tick(self, context: ContextTypes.DEFAULT_TYPE):
+        """Periodic job: check pending reminders and deliver."""
+        try:
+            due_items = self.db.get_pending_reminders()
+            for item in due_items:
+                chat_id = item['user_id']
+                subject = item.get('subject', '')
+                category = item.get('category', '')
+                text = f"⏰ תזכורת לפריט:\n📁 {category}\n📝 {subject}"
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                except Exception:
+                    pass
+                self.db.clear_reminder(item['id'])
+        except Exception:
+            # do not raise in job
+            pass
+
+    # --- Calendar UI helpers ---
+    def _build_calendar_markup(self, item_id: int, year: int, month: int) -> InlineKeyboardMarkup:
+        cal = calendar.Calendar(firstweekday=6)  # Start on Sunday
+        month_days = cal.monthdayscalendar(year, month)
+        rows = []
+        # Header with month/year and nav
+        prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+        next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+        month_name = f"{month:02d}/{year}"
+        rows.append([
+            InlineKeyboardButton("‹", callback_data=f"cal_{item_id}_{prev_year}_{prev_month}"),
+            InlineKeyboardButton(month_name, callback_data="noop"),
+            InlineKeyboardButton("›", callback_data=f"cal_{item_id}_{next_year}_{next_month}")
+        ])
+        # Weekday headers
+        rows.append([
+            InlineKeyboardButton("א", callback_data="noop"),
+            InlineKeyboardButton("ב", callback_data="noop"),
+            InlineKeyboardButton("ג", callback_data="noop"),
+            InlineKeyboardButton("ד", callback_data="noop"),
+            InlineKeyboardButton("ה", callback_data="noop"),
+            InlineKeyboardButton("ו", callback_data="noop"),
+            InlineKeyboardButton("ש", callback_data="noop"),
+        ])
+        # Days
+        for week in month_days:
+            row = []
+            for day in week:
+                if day == 0:
+                    row.append(InlineKeyboardButton(" ", callback_data="noop"))
+                else:
+                    row.append(InlineKeyboardButton(str(day), callback_data=f"calpick_{item_id}_{year}_{month}_{day}"))
+            rows.append(row)
+        # Cancel
+        rows.append([InlineKeyboardButton("ביטול", callback_data=f"remcancel_{item_id}")])
+        return InlineKeyboardMarkup(rows)
+
+    async def open_calendar(self, query, context: ContextTypes.DEFAULT_TYPE, item_id: int):
+        now = datetime.now(tz=LOCAL_TZ)
+        markup = self._build_calendar_markup(item_id, now.year, now.month)
+        await query.edit_message_reply_markup(reply_markup=markup)
+
+    async def calendar_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        if data.startswith('cal_'):
+            _, item_id, year, month = data.split('_')
+            markup = self._build_calendar_markup(int(item_id), int(year), int(month))
+            await query.edit_message_reply_markup(reply_markup=markup)
+            return SELECTING_ACTION
+        if data.startswith('calpick_'):
+            _, item_id, year, month, day = data.split('_')
+            # store the chosen date and ask for time
+            context.user_data['pending_reminder_item_id'] = int(item_id)
+            context.user_data['pending_reminder_date'] = (int(year), int(month), int(day))
+            times = [
+                [InlineKeyboardButton("09:00", callback_data="time_09_00"), InlineKeyboardButton("12:00", callback_data="time_12_00"), InlineKeyboardButton("18:00", callback_data="time_18_00")],
+                [InlineKeyboardButton("בחר שעה…", callback_data="time_custom"), InlineKeyboardButton("ביטול", callback_data=f"remcancel_{item_id}")]
+            ]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(times))
+            return SELECTING_ACTION
+        if data.startswith('time_'):
+            _, hh, mm = data.split('_')
+            y, m, d = context.user_data.get('pending_reminder_date', (None, None, None))
+            item_id = context.user_data.get('pending_reminder_item_id')
+            if not all([y, m, d, item_id]):
+                return SELECTING_ACTION
+            remind_at = datetime(year=y, month=m, day=d, hour=int(hh), minute=int(mm))
+            ok = self.db.set_reminder(int(item_id), remind_at)
+            chat_id = query.message.chat.id
+            if ok:
+                await context.bot.send_message(chat_id=chat_id, text=f"⏰ נקבעה תזכורת ל-{d:02d}/{m:02d}/{y} בשעה {hh}:{mm}.")
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="שגיאה בקביעת תזכורת.")
+            context.user_data.pop('pending_reminder_date', None)
+            context.user_data.pop('pending_reminder_item_id', None)
+            return SELECTING_ACTION
+        if data == 'time_custom':
+            await query.edit_message_text("הקלד שעה בפורמט HH:MM (24h):")
+            return AWAIT_REMINDER_TIME
+        if data.startswith('remcancel_'):
+            await query.edit_message_text("בוטל.")
+            context.user_data.pop('pending_reminder_date', None)
+            context.user_data.pop('pending_reminder_item_id', None)
+            return SELECTING_ACTION
+        return SELECTING_ACTION
+
+    async def reminder_time_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        text = (update.message.text or '').strip()
+        if not re.match(r'^\d{2}:\d{2}$', text):
+            await update.message.reply_text("פורמט לא תקין. הקלד שעה כמו 09:30")
+            return AWAIT_REMINDER_TIME
+        hh, mm = text.split(':')
+        try:
+            h, m = int(hh), int(mm)
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                raise ValueError
+        except Exception:
+            await update.message.reply_text("שעה לא תקינה.")
+            return AWAIT_REMINDER_TIME
+        y, mo, d = context.user_data.get('pending_reminder_date', (None, None, None))
+        item_id = context.user_data.get('pending_reminder_item_id')
+        if not all([y, mo, d, item_id]):
+            await update.message.reply_text("אין פריט/תאריך ממתינים.")
+            return SELECTING_ACTION
+        remind_at = datetime(year=y, month=mo, day=d, hour=h, minute=m)
+        ok = self.db.set_reminder(int(item_id), remind_at)
+        if ok:
+            await update.message.reply_text(f"⏰ נקבעה תזכורת ל-{d:02d}/{mo:02d}/{y} בשעה {h:02d}:{m:02d}.")
+        else:
+            await update.message.reply_text("שגיאה בקביעת תזכורת.")
+        context.user_data.pop('pending_reminder_date', None)
+        context.user_data.pop('pending_reminder_item_id', None)
+        return SELECTING_ACTION
 
     # --- Activity Reporting Helper ---
     def _report(self, update: Update):
@@ -344,7 +511,7 @@ class SaveMeBot:
         # Additionally send as a .md file so the user can open with a Markdown viewer
         try:
             md_bytes = BytesIO(text.encode('utf-8'))
-            md_bytes.name = f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+            md_bytes.name = f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
             await update.message.reply_document(document=md_bytes, filename=md_bytes.name, caption="קובץ Markdown")
         except Exception:
             # Ignore file send failures; preview already sent
@@ -383,6 +550,7 @@ class SaveMeBot:
             [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}")],
             [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
+            [InlineKeyboardButton("🕰️ תזכורת", callback_data=f"reminder_{item_id}")],
         ]
 
         # Content-aware action row
@@ -529,11 +697,30 @@ class SaveMeBot:
         )
         
         await update.message.reply_text("✅ נשמר בהצלחה!")
+        # Offer to set a reminder now
+        kb = [
+            [
+                InlineKeyboardButton("1ש׳", callback_data=f"remset_{item_id}_1"),
+                InlineKeyboardButton("3ש׳", callback_data=f"remset_{item_id}_3"),
+                InlineKeyboardButton("24ש׳", callback_data=f"remset_{item_id}_24"),
+            ],
+            [
+                InlineKeyboardButton("בחר תאריך…", callback_data=f"remdate_{item_id}"),
+                InlineKeyboardButton("מותאם שעות…", callback_data=f"remcustom_{item_id}"),
+                InlineKeyboardButton("דלג", callback_data=f"remignore_{item_id}")
+            ]
+        ]
+        await update.message.reply_text("להוסיף תזכורת לפריט הזה?", reply_markup=InlineKeyboardMarkup(kb))
+
+        # Keep item_id for potential custom input
+        context.user_data['pending_reminder_item_id'] = item_id
+
+        # Also show item actions
         await self.show_item_with_actions(update, context, item_id)
-        
-        # Clean up user_data and return to the main menu
+
+        # Clean up content buffer only (keep pending_reminder_item_id)
         del context.user_data['new_item']
-        return await self.start(update, context)
+        return SELECTING_ACTION
 
     async def save_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
@@ -549,9 +736,19 @@ class SaveMeBot:
         self._report(update)
         query = update.callback_query; await query.answer()
         action, item_id_str = query.data.split('_', 1)
-        item_id = int(item_id_str)
+        # Some actions encode more data after the id (e.g., remset_{id}_{hours})
+        # Defer strict parsing until needed
+        try:
+            item_id = int(item_id_str)
+        except ValueError:
+            item_id = None
 
         if action in ['showitem', 'pin', 'delete']:
+            if item_id is None:
+                try:
+                    item_id = int(item_id_str)
+                except Exception:
+                    return SELECTING_ACTION
             if action == 'pin': self.db.toggle_pin(item_id)
             if action == 'delete': self.db.delete_item(item_id); await query.edit_message_text("✅ הפריט נמחק."); return SELECTING_ACTION
             await self.show_item_with_actions(query, context, item_id)
@@ -559,6 +756,11 @@ class SaveMeBot:
 
         # New: content operations
         if action in ['preview', 'copyall', 'copycode', 'download']:
+            if item_id is None:
+                try:
+                    item_id = int(item_id_str)
+                except Exception:
+                    return SELECTING_ACTION
             item = self.db.get_item(item_id)
             if not item:
                 await query.edit_message_text("הפריט לא קיים עוד.")
@@ -616,7 +818,7 @@ class SaveMeBot:
                         text = item.get('content') or ''
                         if text:
                             md_bytes = BytesIO(text.encode('utf-8'))
-                            md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+                            md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.txt"
                             await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
                 else:
                     text = item.get('content') or ''
@@ -626,9 +828,87 @@ class SaveMeBot:
                     md_bytes = BytesIO(text.encode('utf-8'))
                     looks_md = '```' in text or re.search(r'(^|\n)#{1,6}\s', text)
                     ext = 'md' if looks_md else 'txt'
-                    md_bytes.name = item.get('file_name') or f"note-{datetime.now().strftime('%Y%m%d-%H%M%S')}.{ext}"
+                    md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.{ext}"
                     await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
                 return SELECTING_ACTION
+
+        # Reminder menu entry from item view
+        if action == 'reminder':
+            if item_id is None:
+                try:
+                    item_id = int(item_id_str)
+                except Exception:
+                    return SELECTING_ACTION
+            kb = [
+                [
+                    InlineKeyboardButton("1ש׳", callback_data=f"remset_{item_id}_1"),
+                    InlineKeyboardButton("3ש׳", callback_data=f"remset_{item_id}_3"),
+                    InlineKeyboardButton("24ש׳", callback_data=f"remset_{item_id}_24"),
+                ],
+                [
+                    InlineKeyboardButton("בחר תאריך…", callback_data=f"remdate_{item_id}"),
+                    InlineKeyboardButton("מותאם שעות…", callback_data=f"remcustom_{item_id}"),
+                    InlineKeyboardButton("בטל תזכורת", callback_data=f"remclear_{item_id}"),
+                ]
+            ]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
+            return SELECTING_ACTION
+
+        # Quick-set reminder buttons
+        if action.startswith('remset'):
+            # pattern: remset_{itemId}_{hours}
+            try:
+                parts = item_id_str.split('_')
+                item_id = int(parts[0])
+                hours = int(parts[1])
+            except Exception:
+                await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאת תזכורת.")
+                return SELECTING_ACTION
+            hours = max(MIN_REMINDER_HOURS, min(MAX_REMINDER_HOURS, hours))
+            remind_at = datetime.now(tz=LOCAL_TZ).replace(tzinfo=None) + timedelta(hours=hours)
+            ok = self.db.set_reminder(item_id, remind_at)
+            if ok:
+                await context.bot.send_message(chat_id=query.message.chat.id, text=f"⏰ נקבעה תזכורת בעוד {hours} שעות.")
+            else:
+                await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאה בקביעת תזכורת.")
+            return SELECTING_ACTION
+
+        # Open date calendar
+        if action.startswith('remdate'):
+            try:
+                item_id = int(item_id_str)
+            except Exception:
+                await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאת תזכורת.")
+                return SELECTING_ACTION
+            await self.open_calendar(query, context, item_id)
+            return SELECTING_ACTION
+
+        # Open custom reminder input
+        if action.startswith('remcustom'):
+            try:
+                item_id = int(item_id_str)
+            except Exception:
+                await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאת תזכורת.")
+                return SELECTING_ACTION
+            context.user_data['pending_reminder_item_id'] = item_id
+            await context.bot.send_message(chat_id=query.message.chat.id, text=f"הקלד מספר שעות (בין {MIN_REMINDER_HOURS}-{MAX_REMINDER_HOURS}):")
+            return AWAIT_REMINDER_HOURS
+
+        # Clear reminder for item
+        if action.startswith('remclear'):
+            try:
+                item_id = int(item_id_str)
+            except Exception:
+                await context.bot.send_message(chat_id=query.message.chat.id, text="שגיאת תזכורת.")
+                return SELECTING_ACTION
+            self.db.clear_reminder(item_id)
+            await context.bot.send_message(chat_id=query.message.chat.id, text="התזכורת בוטלה.")
+            return SELECTING_ACTION
+
+        # Ignore post-save prompt
+        if action.startswith('remignore'):
+            await context.bot.send_message(chat_id=query.message.chat.id, text="לא נקבעה תזכורת.")
+            return SELECTING_ACTION
 
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
@@ -694,7 +974,8 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_)" )
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_)" ),
+                CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
             ],
             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
             AWAIT_CATEGORY: [CallbackQueryHandler(bot.receive_category, pattern="^cat_"), MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_category)],
@@ -707,13 +988,22 @@ def main() -> None:
             AWAIT_MULTIPART: [
                 CallbackQueryHandler(bot.multipart_router, pattern='^(multipart_end|multipart_cancel)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.multipart_router)
-            ]
+            ],
+            AWAIT_REMINDER_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_hours_input)]
+            ,
+            AWAIT_REMINDER_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_time_input)]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
     )
 
     application.add_handler(conv_handler)
+
+    # Start periodic reminder job (every minute)
+    try:
+        application.job_queue.run_repeating(bot.reminder_tick, interval=60, first=10)
+    except Exception:
+        pass
 
     logger.info("Bot is starting to poll...")
     application.run_polling()

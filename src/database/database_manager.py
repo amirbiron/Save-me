@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -10,6 +11,8 @@ class Database:
     def __init__(self, db_path: str = "save_me_bot.db"):
         """אתחול מסד הנתונים"""
         self.db_path = db_path
+        # Use Jerusalem timezone for reminder comparisons; store as local-naive timestamps
+        self.local_tz = ZoneInfo(os.environ.get('TZ', 'Asia/Jerusalem'))
         self.init_database()
     
     def init_database(self) -> None:
@@ -219,17 +222,28 @@ class Database:
             logger.error(f"Error toggling pin for item {item_id}: {e}")
             return False
     
-    def set_reminder(self, item_id: int, reminder_time: datetime) -> bool:
+    def set_reminder(self, item_id: int, reminder_time: datetime | None) -> bool:
         """קביעת תזכורת לפריט"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                cursor.execute('''
-                    UPDATE saved_items 
-                    SET reminder_at = ?, updated_at = CURRENT_TIMESTAMP 
-                    WHERE id = ?
-                ''', (reminder_time.isoformat(), item_id))
+                # Normalize to local-naive timestamp (Asia/Jerusalem) or clear if None
+                if reminder_time is None:
+                    cursor.execute('''
+                        UPDATE saved_items 
+                        SET reminder_at = NULL, updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = ?
+                    ''', (item_id,))
+                else:
+                    if reminder_time.tzinfo is not None:
+                        local_dt = reminder_time.astimezone(self.local_tz).replace(tzinfo=None)
+                    else:
+                        local_dt = reminder_time
+                    cursor.execute('''
+                        UPDATE saved_items 
+                        SET reminder_at = ?, updated_at = CURRENT_TIMESTAMP 
+                        WHERE id = ?
+                    ''', (local_dt.isoformat(), item_id))
                 
                 conn.commit()
                 return True
@@ -335,7 +349,7 @@ class Database:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
-                now = datetime.now().isoformat()
+                now = datetime.now(tz=self.local_tz).replace(tzinfo=None).isoformat()
                 
                 cursor.execute('''
                     SELECT * FROM saved_items 
@@ -430,7 +444,7 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
 
-                cutoff_date = datetime.now() - timedelta(days=days_old)
+                cutoff_date = datetime.now(tz=self.local_tz).replace(tzinfo=None) - timedelta(days=days_old)
 
                 cursor.execute('''
                     UPDATE saved_items 
