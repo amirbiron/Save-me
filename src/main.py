@@ -20,6 +20,7 @@ from telegram.error import Conflict, NetworkError, Forbidden, TimedOut, BadReque
 
 from database.database_manager import Database
 from activity_reporter import create_reporter
+from github_gist_handler import GithubGistHandler
 
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
@@ -184,7 +185,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART, AWAIT_REMINDER_HOURS, AWAIT_REMINDER_TIME = range(12)
+SELECTING_ACTION, AWAIT_CONTENT, AWAIT_CATEGORY, AWAIT_SUBJECT, AWAIT_SUBJECT_EDIT, AWAIT_NOTE, AWAIT_EDIT, AWAIT_SEARCH, AWAIT_MD_TEXT, AWAIT_MULTIPART, AWAIT_REMINDER_HOURS, AWAIT_REMINDER_TIME, AWAIT_GITHUB_TOKEN, AWAIT_GIST_CONFIRM = range(14)
 
 # --- Display/length thresholds and helpers ---
 TELEGRAM_MAX_MESSAGE_CHARS = 4000
@@ -228,6 +229,7 @@ class SaveMeBot:
     def __init__(self):
         db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
+        self.gist_handler = GithubGistHandler(self.db)
         self._start_reminder_job = False
 
     async def reminder_hours_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -598,6 +600,13 @@ class SaveMeBot:
                 content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
             else:
                 content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+            
+            # Add GitHub Gist button for code/text
+            gist_info = self.db.get_item_gist(item_id)
+            if gist_info:
+                content_buttons.append(InlineKeyboardButton("🔗 Gist", url=gist_info['url']))
+            else:
+                content_buttons.append(InlineKeyboardButton("🐙 Create Gist", callback_data=f"gist_{item_id}"))
             # Add copy code button when content is a fenced code block
             # No extra button; native Telegram UI handles code copy within the message
         elif content_type == 'document' and file_id:
@@ -948,6 +957,10 @@ class SaveMeBot:
         if action.startswith('remignore'):
             await context.bot.send_message(chat_id=query.message.chat.id, text="לא נקבעה תזכורת.")
             return SELECTING_ACTION
+        
+        # Handle GitHub Gist creation
+        if action.startswith('gist'):
+            return await self.handle_gist_creation(update, context)
 
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
@@ -966,6 +979,214 @@ class SaveMeBot:
         await update.message.reply_text("✅ הנושא עודכן.")
         await self.show_item_with_actions(update, context, item_id)
         del context.user_data['action_item_id']
+        return await self.start(update, context)
+
+    async def setup_github(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """הגדרת GitHub token"""
+        self._report(update)
+        user_id = update.effective_user.id
+        
+        # Check if token already exists
+        existing_token = self.gist_handler.get_user_token(user_id)
+        if existing_token:
+            keyboard = [
+                [InlineKeyboardButton("🔄 החלף Token", callback_data="github_replace")],
+                [InlineKeyboardButton("❌ הסר Token", callback_data="github_remove")],
+                [InlineKeyboardButton("❌ ביטול", callback_data="cancel")]
+            ]
+            await update.message.reply_text(
+                "🐙 כבר הגדרת GitHub token.\n"
+                "מה תרצה לעשות?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(
+                "🐙 **הגדרת GitHub Token**\n\n"
+                "כדי ליצור Gists, אני צריך GitHub Personal Access Token.\n\n"
+                "**איך יוצרים Token:**\n"
+                "1. היכנס ל-GitHub.com\n"
+                "2. לך ל-Settings → Developer settings → Personal access tokens → Tokens (classic)\n"
+                "3. לחץ על 'Generate new token (classic)'\n"
+                "4. תן לו שם (למשל: SaveMe Bot)\n"
+                "5. סמן את ההרשאה: `gist` (Create gists)\n"
+                "6. לחץ 'Generate token'\n"
+                "7. העתק את ה-token ושלח לי אותו\n\n"
+                "⚠️ **חשוב:** שמור את ה-token במקום בטוח, הוא יוצג רק פעם אחת!\n"
+                "🔒 ה-token יישמר מוצפן ולא ישותף עם אף אחד.\n\n"
+                "שלח את ה-token או /cancel לביטול:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return AWAIT_GITHUB_TOKEN
+        
+        return SELECTING_ACTION
+    
+    async def handle_github_token(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול בקבלת GitHub token"""
+        self._report(update)
+        user_id = update.effective_user.id
+        token = update.message.text.strip()
+        
+        # Delete the message with the token for security
+        try:
+            await update.message.delete()
+        except:
+            pass
+        
+        # Validate and store token
+        if self.gist_handler.set_user_token(user_id, token):
+            username = self.db.get_user_settings(user_id).get('github_username', 'Unknown')
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"✅ **Token נשמר בהצלחה!**\n"
+                f"👤 משתמש GitHub: @{username}\n\n"
+                f"עכשיו תוכל ליצור Gists מהקוד ששמרת.\n"
+                f"פשוט לחץ על 'Create Gist' בכל פריט טקסט או קוד!",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ **Token לא תקין**\n\n"
+                "בדוק שהעתקת את ה-token במלואו ונסה שוב.\n"
+                "אם הבעיה נמשכת, ייתכן שה-token פג תוקף או חסרות הרשאות.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+        return await self.start(update, context)
+    
+    async def handle_github_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול בפעולות GitHub מהתפריט"""
+        self._report(update)
+        query = update.callback_query
+        await query.answer()
+        user_id = update.effective_user.id
+        action = query.data
+        
+        if action == "github_replace":
+            await query.edit_message_text(
+                "🔄 **החלפת GitHub Token**\n\n"
+                "שלח את ה-token החדש או /cancel לביטול:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return AWAIT_GITHUB_TOKEN
+        
+        elif action == "github_remove":
+            if self.gist_handler.remove_user_token(user_id):
+                await query.edit_message_text("✅ ה-token הוסר בהצלחה.")
+            else:
+                await query.edit_message_text("❌ שגיאה בהסרת ה-token.")
+            return await self.start(update, context)
+        
+        elif action == "cancel":
+            await query.edit_message_text("❌ הפעולה בוטלה.")
+            return await self.start(update, context)
+        
+        elif action == "setup_github_now":
+            await query.edit_message_text(
+                "🐙 **הגדרת GitHub Token**\n\n"
+                "כדי ליצור Gists, אני צריך GitHub Personal Access Token.\n\n"
+                "**איך יוצרים Token:**\n"
+                "1. היכנס ל-GitHub.com\n"
+                "2. לך ל-Settings → Developer settings → Personal access tokens → Tokens (classic)\n"
+                "3. לחץ על 'Generate new token (classic)'\n"
+                "4. תן לו שם (למשל: SaveMe Bot)\n"
+                "5. סמן את ההרשאה: `gist` (Create gists)\n"
+                "6. לחץ 'Generate token'\n"
+                "7. העתק את ה-token ושלח לי אותו\n\n"
+                "⚠️ **חשוב:** שמור את ה-token במקום בטוח, הוא יוצג רק פעם אחת!\n"
+                "🔒 ה-token יישמר מוצפן ולא ישותף עם אף אחד.\n\n"
+                "שלח את ה-token או /cancel לביטול:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return AWAIT_GITHUB_TOKEN
+        
+        return SELECTING_ACTION
+    
+    async def handle_gist_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול ביצירת Gist"""
+        self._report(update)
+        query = update.callback_query
+        await query.answer()
+        
+        # Extract item_id from callback data
+        item_id = int(query.data.replace('gist_', ''))
+        user_id = update.effective_user.id
+        
+        # Check if user has GitHub token
+        if not self.gist_handler.get_user_token(user_id):
+            keyboard = [[InlineKeyboardButton("🔧 הגדר GitHub Token", callback_data="setup_github_now")]]
+            await query.edit_message_text(
+                "❌ **לא הגדרת GitHub Token**\n\n"
+                "כדי ליצור Gists, תצטרך להגדיר token.\n"
+                "השתמש בפקודה /setup_github",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return SELECTING_ACTION
+        
+        # Store item_id for later use
+        context.user_data['gist_item_id'] = item_id
+        
+        # Ask if public or private
+        keyboard = [
+            [InlineKeyboardButton("🌍 ציבורי", callback_data="gist_public")],
+            [InlineKeyboardButton("🔒 פרטי", callback_data="gist_private")],
+            [InlineKeyboardButton("❌ ביטול", callback_data="gist_cancel")]
+        ]
+        
+        await query.edit_message_text(
+            "🐙 **יצירת GitHub Gist**\n\n"
+            "האם ברצונך ליצור Gist ציבורי או פרטי?\n\n"
+            "• **ציבורי** - כל אחד יכול לראות (מופיע בחיפוש)\n"
+            "• **פרטי** - רק מי שיש לו את הקישור",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        return AWAIT_GIST_CONFIRM
+    
+    async def handle_gist_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """אישור ויצירת Gist"""
+        self._report(update)
+        query = update.callback_query
+        await query.answer()
+        
+        action = query.data
+        item_id = context.user_data.get('gist_item_id')
+        user_id = update.effective_user.id
+        
+        if action == "gist_cancel":
+            await query.edit_message_text("❌ יצירת Gist בוטלה.")
+            del context.user_data['gist_item_id']
+            return await self.start(update, context)
+        
+        public = (action == "gist_public")
+        
+        # Create the gist
+        await query.edit_message_text("⏳ יוצר Gist...")
+        
+        result = self.gist_handler.create_gist_from_item(user_id, item_id, public=public)
+        
+        if result and result.get('success'):
+            gist_url = result['url']
+            visibility = "ציבורי 🌍" if public else "פרטי 🔒"
+            
+            keyboard = [[InlineKeyboardButton("🔗 פתח ב-GitHub", url=gist_url)]]
+            
+            await query.edit_message_text(
+                f"✅ **Gist נוצר בהצלחה!**\n\n"
+                f"📝 קובץ: `{result['filename']}`\n"
+                f"🔐 סוג: {visibility}\n"
+                f"🔗 קישור: {gist_url}\n\n"
+                f"הקישור נשמר עם הפריט.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            error_msg = result.get('error', 'שגיאה לא ידועה') if result else 'שגיאה לא ידועה'
+            await query.edit_message_text(f"❌ **שגיאה ביצירת Gist:**\n{error_msg}", parse_mode=ParseMode.MARKDOWN)
+        
+        del context.user_data['gist_item_id']
         return await self.start(update, context)
 
     async def save_edited_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1043,7 +1264,7 @@ def main() -> None:
     # Bot commands setup skipped to keep main() synchronous
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help)],
+        entry_points=[CommandHandler('start', bot.start), CommandHandler('tomd', bot.ask_for_md_text), CommandHandler('upload', bot.upload_help), CommandHandler('setup_github', bot.setup_github)],
         states={
                          SELECTING_ACTION: [
                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
@@ -1054,7 +1275,8 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_)" ),
+                CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
             ],
             AWAIT_CONTENT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.receive_content)],
@@ -1069,9 +1291,10 @@ def main() -> None:
                 CallbackQueryHandler(bot.multipart_router, pattern='^(multipart_end|multipart_cancel)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.multipart_router)
             ],
-            AWAIT_REMINDER_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_hours_input)]
-            ,
-            AWAIT_REMINDER_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_time_input)]
+            AWAIT_REMINDER_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_hours_input)],
+            AWAIT_REMINDER_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.reminder_time_input)],
+            AWAIT_GITHUB_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_github_token)],
+            AWAIT_GIST_CONFIRM: [CallbackQueryHandler(bot.handle_gist_confirm, pattern="^gist_(public|private|cancel)$")]
         },
         fallbacks=[CommandHandler('cancel', bot.cancel)],
         allow_reentry=True
