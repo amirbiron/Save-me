@@ -134,6 +134,10 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting item {item_id}: {e}")
             return None
+
+    def get_item_by_id(self, item_id: int) -> Optional[Dict[str, Any]]:
+        """Alias לשמירה על תאימות לאחור: קבלת פריט לפי ID"""
+        return self.get_item(item_id)
     
     def get_user_categories(self, user_id: int) -> List[str]:
         """קבלת רשימת קטגוריות של משתמש"""
