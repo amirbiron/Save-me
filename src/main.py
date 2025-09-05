@@ -21,6 +21,7 @@ from telegram.error import Conflict, NetworkError, Forbidden, TimedOut, BadReque
 from database.database_manager import Database
 from activity_reporter import create_reporter
 from github_gist_handler import GithubGistHandler
+from internal_share_handler import InternalShareHandler
 
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
@@ -230,6 +231,7 @@ class SaveMeBot:
         db_path = os.environ.get('DATABASE_PATH', 'save_me_bot.db')
         self.db = Database(db_path=db_path)
         self.gist_handler = GithubGistHandler(self.db)
+        self.share_handler = InternalShareHandler(self.db)
         self._start_reminder_job = False
 
     async def reminder_hours_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -398,6 +400,15 @@ class SaveMeBot:
     # --- Main Menu and State Entrypoints ---
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
+        
+        # Check for deep link parameters (share links)
+        if context.args and len(context.args) > 0:
+            param = context.args[0]
+            if param.startswith('share_'):
+                # Handle shared item
+                token = param.replace('share_', '')
+                return await self.handle_shared_item(update, context, token)
+        
         username = update.effective_user.first_name
         welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
         keyboard = [
@@ -410,6 +421,49 @@ class SaveMeBot:
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         chat_id = update.effective_chat.id
         await context.bot.send_message(chat_id=chat_id, text=welcome_text, reply_markup=reply_markup)
+        return SELECTING_ACTION
+    
+    async def handle_shared_item(self, update: Update, context: ContextTypes.DEFAULT_TYPE, token: str) -> int:
+        """Handle viewing a shared item via deep link"""
+        chat_id = update.effective_chat.id
+        
+        # Get item by token
+        item_data = self.share_handler.get_item_by_token(token)
+        
+        if not item_data:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ הקישור אינו תקף או שהפריט כבר לא משותף.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return await self.start(update, context)
+        
+        # Format and display the shared item
+        message = self.share_handler.format_shared_item(item_data)
+        
+        # Create buttons for actions
+        keyboard = []
+        
+        # If it's a text item, add copy button
+        if item_data.get('content_type') == 'text' and item_data.get('content'):
+            keyboard.append([InlineKeyboardButton("📋 העתק תוכן", callback_data=f"copy_shared_{token}")])
+        
+        # If it's a document, add download button
+        if item_data.get('content_type') == 'document' and item_data.get('file_id'):
+            keyboard.append([InlineKeyboardButton("📥 הורד קובץ", callback_data=f"download_shared_{token}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 תפריט ראשי", callback_data="main_menu")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        # Send the shared item
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=reply_markup
+        )
+        
         return SELECTING_ACTION
 
     async def ask_for_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -607,6 +661,15 @@ class SaveMeBot:
                 content_buttons.append(InlineKeyboardButton("🔗 Gist", url=gist_info['url']))
             else:
                 content_buttons.append(InlineKeyboardButton("🐙 Create Gist", callback_data=f"gist_{item_id}"))
+            
+            # Add internal share link button
+            share_info = self.db.get_item_share_info(item_id)
+            if share_info and share_info.get('token'):
+                share_url = self.share_handler.get_share_link(item_id)
+                content_buttons.append(InlineKeyboardButton("🔗 קישור פנימי", url=share_url))
+            else:
+                content_buttons.append(InlineKeyboardButton("🔗 צור קישור פנימי", callback_data=f"share_{item_id}"))
+            
             # Add copy code button when content is a fenced code block
             # No extra button; native Telegram UI handles code copy within the message
         elif content_type == 'document' and file_id:
@@ -961,6 +1024,14 @@ class SaveMeBot:
         # Handle GitHub Gist creation
         if action.startswith('gist'):
             return await self.handle_gist_creation(update, context)
+        
+        # Handle internal share link creation
+        if action.startswith('share'):
+            return await self.handle_share_creation(update, context)
+        
+        # Handle unshare
+        if action.startswith('unshare'):
+            return await self.handle_unshare(update, context)
 
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
@@ -1217,6 +1288,170 @@ class SaveMeBot:
         
         del context.user_data['gist_item_id']
         return await self.start(update, context)
+    
+    async def handle_share_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול ביצירת קישור פנימי לשיתוף"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        # Extract item ID from callback data
+        item_id = int(query.data.replace('share_', ''))
+        
+        # Check if item already has a share link
+        share_info = self.db.get_item_share_info(item_id)
+        
+        if share_info and share_info.get('token'):
+            # Item already has a share link
+            share_url = self.share_handler.get_share_link(item_id)
+            
+            keyboard = [
+                [InlineKeyboardButton("📋 העתק קישור", url=share_url)],
+                [InlineKeyboardButton("🗑️ הסר קישור", callback_data=f"unshare_{item_id}")],
+                [InlineKeyboardButton("🔙 חזור", callback_data=f"showitem_{item_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            safe_url = escape_markdown(share_url)
+            
+            await query.edit_message_text(
+                f"📤 **קישור שיתוף פנימי קיים\!**\n\n"
+                f"הפריט כבר משותף בקישור:\n"
+                f"`{safe_url}`\n\n"
+                f"ניתן להעתיק את הקישור או להסיר את השיתוף\.",
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=reply_markup
+            )
+        else:
+            # Create new share link
+            result = self.share_handler.create_share_link(item_id)
+            
+            if result:
+                share_url = result['url']
+                
+                keyboard = [
+                    [InlineKeyboardButton("📋 העתק קישור", url=share_url)],
+                    [InlineKeyboardButton("🗑️ הסר קישור", callback_data=f"unshare_{item_id}")],
+                    [InlineKeyboardButton("🔙 חזור", callback_data=f"showitem_{item_id}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                safe_url = escape_markdown(share_url)
+                
+                await query.edit_message_text(
+                    f"✅ **קישור שיתוף פנימי נוצר בהצלחה\!**\n\n"
+                    f"📤 הקישור לשיתוף:\n"
+                    f"`{safe_url}`\n\n"
+                    f"שתף את הקישור עם כל מי שתרצה\!\n"
+                    f"הם יוכלו לצפות בתוכן ולהעתיק אותו\.",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ שגיאה ביצירת קישור השיתוף.\nנסה שוב מאוחר יותר.",
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+        
+        return SELECTING_ACTION
+    
+    async def handle_unshare(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול בהסרת קישור שיתוף"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Extract item ID from callback data
+        item_id = int(query.data.replace('unshare_', ''))
+        
+        if self.share_handler.remove_share_link(item_id):
+            await query.edit_message_text(
+                "✅ קישור השיתוף הוסר בהצלחה.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        else:
+            await query.edit_message_text(
+                "❌ שגיאה בהסרת קישור השיתוף.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        
+        return SELECTING_ACTION
+    
+    async def handle_shared_item_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle actions on shared items"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        if data == "main_menu":
+            # Return to main menu
+            await query.delete_message()
+            return await self.start(update, context)
+        
+        if data.startswith("copy_shared_"):
+            token = data.replace("copy_shared_", "")
+            item_data = self.share_handler.get_item_by_token(token)
+            
+            if item_data and item_data.get('content'):
+                content = item_data['content']
+                # Send content as a copyable message
+                if len(content) <= TELEGRAM_MAX_MESSAGE_CHARS:
+                    # Escape backticks in content for code block
+                    escaped_content = content.replace('`', '\\`')
+                    await context.bot.send_message(
+                        chat_id=query.message.chat.id,
+                        text=f"```\n{escaped_content}\n```",
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    await query.answer("התוכן נשלח - ניתן להעתיק אותו")
+                else:
+                    # Send as file if too long
+                    import io
+                    file_name = f"shared_content_{token[:8]}.txt"
+                    file_bytes = content.encode('utf-8')
+                    await context.bot.send_document(
+                        chat_id=query.message.chat.id,
+                        document=io.BytesIO(file_bytes),
+                        filename=file_name,
+                        caption="התוכן ארוך מדי - מצורף כקובץ"
+                    )
+                    await query.answer("התוכן נשלח כקובץ")
+            else:
+                await query.answer("לא ניתן להעתיק את התוכן", show_alert=True)
+        
+        elif data.startswith("download_shared_"):
+            token = data.replace("download_shared_", "")
+            item_data = self.share_handler.get_item_by_token(token)
+            
+            if item_data and item_data.get('file_id'):
+                try:
+                    await context.bot.send_document(
+                        chat_id=query.message.chat.id,
+                        document=item_data['file_id'],
+                        caption=f"📥 קובץ משותף: {item_data.get('file_name', 'document')}"
+                    )
+                    await query.answer("הקובץ נשלח")
+                except Exception as e:
+                    logger.error(f"Error sending shared file: {e}")
+                    # Try sending content as file if file_id failed
+                    if item_data.get('content'):
+                        import io
+                        file_name = item_data.get('file_name', f"shared_{token[:8]}.txt")
+                        file_bytes = item_data['content'].encode('utf-8')
+                        await context.bot.send_document(
+                            chat_id=query.message.chat.id,
+                            document=io.BytesIO(file_bytes),
+                            filename=file_name,
+                            caption=f"📥 תוכן הקובץ המשותף: {file_name}"
+                        )
+                        await query.answer("התוכן נשלח כקובץ")
+                    else:
+                        await query.answer("לא ניתן להוריד את הקובץ", show_alert=True)
+            else:
+                await query.answer("לא נמצא קובץ להורדה", show_alert=True)
+        
+        return SELECTING_ACTION
 
     async def save_edited_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
@@ -1316,7 +1551,8 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_)" ),
+                CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
             ],
