@@ -58,6 +58,32 @@ class Database:
                     WHERE reminder_at IS NOT NULL
                 ''')
                 
+                # טבלת הגדרות משתמש
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        user_id INTEGER PRIMARY KEY,
+                        settings TEXT DEFAULT '{}',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # הוספת עמודות Gist לטבלת saved_items אם לא קיימות
+                cursor.execute("PRAGMA table_info(saved_items)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'gist_url' not in columns:
+                    cursor.execute('''
+                        ALTER TABLE saved_items 
+                        ADD COLUMN gist_url TEXT DEFAULT NULL
+                    ''')
+                
+                if 'gist_id' not in columns:
+                    cursor.execute('''
+                        ALTER TABLE saved_items 
+                        ADD COLUMN gist_id TEXT DEFAULT NULL
+                    ''')
+                
                 conn.commit()
                 logger.info("Database initialized successfully")
                 
@@ -458,3 +484,103 @@ class Database:
         except Exception as e:
             logger.error(f"Error cleaning up old reminders: {e}")
             return 0
+    
+    # GitHub Gist Integration Functions
+    
+    def get_user_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """קבלת הגדרות משתמש"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT settings FROM user_settings WHERE user_id = ?', (user_id,))
+                result = cursor.fetchone()
+                
+                if result:
+                    import json
+                    return json.loads(result[0])
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error getting user settings: {e}")
+            return {}
+    
+    def set_user_setting(self, user_id: int, key: str, value: Any) -> bool:
+        """הגדרת ערך בהגדרות משתמש"""
+        try:
+            import json
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get current settings
+                settings = self.get_user_settings(user_id)
+                settings[key] = value
+                settings_json = json.dumps(settings)
+                
+                # Update or insert
+                cursor.execute('''
+                    INSERT OR REPLACE INTO user_settings (user_id, settings, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (user_id, settings_json))
+                
+                conn.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error setting user setting: {e}")
+            return False
+    
+    def remove_user_setting(self, user_id: int, key: str) -> bool:
+        """הסרת ערך מהגדרות משתמש"""
+        try:
+            import json
+            settings = self.get_user_settings(user_id)
+            if key in settings:
+                del settings[key]
+                
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE user_settings 
+                        SET settings = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                    ''', (json.dumps(settings), user_id))
+                    conn.commit()
+                    return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error removing user setting: {e}")
+            return False
+    
+    def add_gist_to_item(self, item_id: int, gist_url: str, gist_id: str) -> bool:
+        """הוספת מידע על Gist לפריט"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE saved_items 
+                    SET gist_url = ?, gist_id = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (gist_url, gist_id, item_id))
+                conn.commit()
+                return cursor.rowcount > 0
+                
+        except Exception as e:
+            logger.error(f"Error adding gist to item: {e}")
+            return False
+    
+    def get_item_gist(self, item_id: int) -> Optional[Dict[str, str]]:
+        """קבלת מידע על Gist של פריט"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT gist_url, gist_id FROM saved_items WHERE id = ?', (item_id,))
+                result = cursor.fetchone()
+                
+                if result and result[0]:
+                    return {"url": result[0], "id": result[1]}
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting item gist: {e}")
+            return None
