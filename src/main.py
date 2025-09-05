@@ -1178,22 +1178,42 @@ class SaveMeBot:
             safe_url = escape_markdown(gist_url)
             safe_visibility = escape_markdown(visibility)
             
-            await query.edit_message_text(
-                "✅ **Gist נוצר בהצלחה!**\n\n"
-                f"📝 קובץ: {safe_filename}\n"
-                f"🔐 סוג: {safe_visibility}\n"
-                f"🔗 קישור: {safe_url}\n\n"
-                "הקישור נשמר עם הפריט.",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+            try:
+                await query.edit_message_text(
+                    "✅ **Gist נוצר בהצלחה\!**\n\n"
+                    f"📝 קובץ: {safe_filename}\n"
+                    f"🔐 סוג: {safe_visibility}\n"
+                    f"🔗 קישור: {safe_url}\n\n"
+                    "הקישור נשמר עם הפריט.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except BadRequest:
+                html_filename = html.escape(result.get('filename', 'file'))
+                html_url = html.escape(gist_url)
+                html_visibility = html.escape(visibility)
+                await query.edit_message_text(
+                    "✅ <b>Gist נוצר בהצלחה!</b>\n\n"
+                    f"📝 קובץ: {html_filename}\n"
+                    f"🔐 סוג: {html_visibility}\n"
+                    f"🔗 קישור: {html_url}\n\n"
+                    "הקישור נשמר עם הפריט.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
         else:
             error_msg = result.get('error', 'שגיאה לא ידועה') if result else 'שגיאה לא ידועה'
             safe_error = escape_markdown(str(error_msg))
-            await query.edit_message_text(
-                "❌ **שגיאה ביצירת Gist:**\n" + safe_error,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+            try:
+                await query.edit_message_text(
+                    "❌ **שגיאה ביצירת Gist:**\n" + safe_error,
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except BadRequest:
+                await query.edit_message_text(
+                    "❌ <b>שגיאה ביצירת Gist:</b>\n" + html.escape(str(error_msg)),
+                    parse_mode=ParseMode.HTML
+                )
         
         del context.user_data['gist_item_id']
         return await self.start(update, context)
