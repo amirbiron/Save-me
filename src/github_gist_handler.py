@@ -73,16 +73,16 @@ class GithubGistHandler:
                 return {"error": "GitHub token not configured. Use /setup_github first."}
             
             # Get item from database
-            item = self.db.get_item_by_id(item_id)
+            item = self.db.get_item(item_id)
             if not item or item['user_id'] != user_id:
                 return {"error": "Item not found or access denied."}
             
-            # Check if item is code/text
-            if item['content_type'] not in ['text', 'code']:
-                return {"error": "Only text and code items can be converted to Gists."}
+            # Ensure item has textual content
+            content = (item.get('content') or '').strip()
+            if not content:
+                return {"error": "Only items with textual content can be converted to Gists."}
             
             # Prepare gist content
-            content = item['content']
             filename = self._generate_filename(item)
             
             # Use item subject as description if not provided

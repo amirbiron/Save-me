@@ -1137,10 +1137,10 @@ class SaveMeBot:
         await query.edit_message_text(
             "🐙 **יצירת GitHub Gist**\n\n"
             "האם ברצונך ליצור Gist ציבורי או פרטי?\n\n"
-            "• **ציבורי** - כל אחד יכול לראות (מופיע בחיפוש)\n"
-            "• **פרטי** - רק מי שיש לו את הקישור",
+            "• **ציבורי** \- כל אחד יכול לראות \(מופיע בחיפוש\)\n"
+            "• **פרטי** \- רק מי שיש לו את הקישור",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN_V2
         )
         
         return AWAIT_GIST_CONFIRM
@@ -1173,18 +1173,27 @@ class SaveMeBot:
             
             keyboard = [[InlineKeyboardButton("🔗 פתח ב-GitHub", url=gist_url)]]
             
+            # Escape dynamic values for safe MarkdownV2
+            safe_filename = escape_markdown(result.get('filename', 'file'))
+            safe_url = escape_markdown(gist_url)
+            safe_visibility = escape_markdown(visibility)
+            
             await query.edit_message_text(
-                f"✅ **Gist נוצר בהצלחה!**\n\n"
-                f"📝 קובץ: `{result['filename']}`\n"
-                f"🔐 סוג: {visibility}\n"
-                f"🔗 קישור: {gist_url}\n\n"
-                f"הקישור נשמר עם הפריט.",
+                "✅ **Gist נוצר בהצלחה!**\n\n"
+                f"📝 קובץ: {safe_filename}\n"
+                f"🔐 סוג: {safe_visibility}\n"
+                f"🔗 קישור: {safe_url}\n\n"
+                "הקישור נשמר עם הפריט.",
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN_V2
             )
         else:
             error_msg = result.get('error', 'שגיאה לא ידועה') if result else 'שגיאה לא ידועה'
-            await query.edit_message_text(f"❌ **שגיאה ביצירת Gist:**\n{error_msg}", parse_mode=ParseMode.MARKDOWN)
+            safe_error = escape_markdown(str(error_msg))
+            await query.edit_message_text(
+                "❌ **שגיאה ביצירת Gist:**\n" + safe_error,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
         
         del context.user_data['gist_item_id']
         return await self.start(update, context)
@@ -1195,35 +1204,47 @@ class SaveMeBot:
         if not item_id:
             return await self.start(update, context)
         
-        # קבלת סוג התוכן החדש
+        # קבלת סוג התוכן החדש והכנת נתונים לעדכון בבסיס הנתונים
+        content = ''
+        file_id = ''
+        file_name = ''
+        caption = update.message.caption or ''
+
         if update.message.text:
             content_type = 'text'
             content = update.message.text.strip()
         elif update.message.document:
-            content_type = 'file'
-            file = await context.bot.get_file(update.message.document.file_id)
-            content = await file.download_as_bytearray()
+            content_type = 'document'
+            doc = update.message.document
+            file_id = doc.file_id
+            file_name = doc.file_name or ''
         elif update.message.photo:
-            content_type = 'image'
+            content_type = 'photo'
             photo = update.message.photo[-1]  # הגודל הגדול ביותר
-            file = await context.bot.get_file(photo.file_id)
-            content = await file.download_as_bytearray()
+            file_id = photo.file_id
         elif update.message.video:
             content_type = 'video'
-            file = await context.bot.get_file(update.message.video.file_id)
-            content = await file.download_as_bytearray()
-        elif update.message.audio or update.message.voice:
-            content_type = 'audio'
-            audio = update.message.audio or update.message.voice
-            file = await context.bot.get_file(audio.file_id)
-            content = await file.download_as_bytearray()
+            vid = update.message.video
+            file_id = vid.file_id
+        elif update.message.voice:
+            content_type = 'voice'
+            voc = update.message.voice
+            file_id = voc.file_id
+        elif update.message.audio:
+            # אין טיפול ייעודי ב-audio; נשמור כ-document כדי לאפשר שליחה כהעלאת מסמך
+            content_type = 'document'
+            aud = update.message.audio
+            file_id = aud.file_id
+            try:
+                file_name = getattr(aud, 'file_name', '') or ''
+            except Exception:
+                file_name = ''
         else:
             await update.message.reply_text("❌ סוג תוכן לא נתמך.")
             return await self.start(update, context)
         
         # עדכון התוכן בבסיס הנתונים
-        self.db.update_content(item_id, content_type, content if content_type == 'text' else '', 
-                             file_data=content if content_type != 'text' else None)
+        self.db.update_content(item_id, content_type, content, file_id, file_name, caption)
         
         await update.message.reply_text("✅ התוכן עודכן בהצלחה.")
         await self.show_item_with_actions(update, context, item_id)
