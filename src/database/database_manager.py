@@ -84,6 +84,19 @@ class Database:
                         ADD COLUMN gist_id TEXT DEFAULT NULL
                     ''')
                 
+                # הוספת עמודת share_token לשיתוף פנימי
+                if 'share_token' not in columns:
+                    cursor.execute('''
+                        ALTER TABLE saved_items 
+                        ADD COLUMN share_token TEXT DEFAULT NULL
+                    ''')
+                
+                if 'is_public' not in columns:
+                    cursor.execute('''
+                        ALTER TABLE saved_items 
+                        ADD COLUMN is_public BOOLEAN DEFAULT FALSE
+                    ''')
+                
                 conn.commit()
                 logger.info("Database initialized successfully")
                 
@@ -587,4 +600,101 @@ class Database:
                 
         except Exception as e:
             logger.error(f"Error getting item gist: {e}")
+            return None
+    
+    # Internal Sharing Functions
+    def create_share_token(self, item_id: int) -> Optional[str]:
+        """יצירת טוקן שיתוף לפריט"""
+        import secrets
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # בדיקה אם כבר קיים טוקן
+                cursor.execute('SELECT share_token FROM saved_items WHERE id = ?', (item_id,))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return result[0]
+                
+                # יצירת טוקן חדש
+                token = secrets.token_urlsafe(16)
+                cursor.execute('''
+                    UPDATE saved_items 
+                    SET share_token = ?, is_public = TRUE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (token, item_id))
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    return token
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error creating share token: {e}")
+            return None
+    
+    def get_item_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """קבלת פריט לפי טוקן שיתוף"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, user_id, category, subject, content_type, content, 
+                           file_id, file_name, caption, note, created_at, updated_at
+                    FROM saved_items 
+                    WHERE share_token = ? AND is_public = TRUE
+                ''', (token,))
+                result = cursor.fetchone()
+                
+                if result:
+                    return {
+                        'id': result[0],
+                        'user_id': result[1],
+                        'category': result[2],
+                        'subject': result[3],
+                        'content_type': result[4],
+                        'content': result[5],
+                        'file_id': result[6],
+                        'file_name': result[7],
+                        'caption': result[8],
+                        'note': result[9],
+                        'created_at': result[10],
+                        'updated_at': result[11]
+                    }
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting item by token: {e}")
+            return None
+    
+    def remove_share_token(self, item_id: int) -> bool:
+        """הסרת טוקן שיתוף מפריט"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE saved_items 
+                    SET share_token = NULL, is_public = FALSE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (item_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+                
+        except Exception as e:
+            logger.error(f"Error removing share token: {e}")
+            return False
+    
+    def get_item_share_info(self, item_id: int) -> Optional[Dict[str, Any]]:
+        """קבלת מידע על שיתוף של פריט"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT share_token, is_public FROM saved_items WHERE id = ?', (item_id,))
+                result = cursor.fetchone()
+                if result:
+                    return {"token": result[0], "is_public": result[1]}
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting item share info: {e}")
             return None
