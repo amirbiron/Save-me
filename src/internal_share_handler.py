@@ -6,6 +6,9 @@ Internal Share Link Handler for SaveMe Bot
 import logging
 from typing import Dict, Optional
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ class InternalShareHandler:
     def __init__(self, db):
         """Initialize the share handler with database connection"""
         self.db = db
-        self.bot_username = os.environ.get('BOT_USERNAME', 'SaveMeBot')
+        self.bot_username = Config.BOT_USERNAME
     
     def create_share_link(self, item_id: int) -> Optional[Dict[str, str]]:
         """

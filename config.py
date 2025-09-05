@@ -7,6 +7,9 @@ class Config:
     # טוקן הבוט מ-BotFather
     BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
     
+    # שם המשתמש של הבוט (ללא @)
+    BOT_USERNAME: str = os.getenv('BOT_USERNAME', 'SaveCodeForMeBot')
+    
     # נתיב מסד הנתונים
     DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'save_me_bot.db')
     
