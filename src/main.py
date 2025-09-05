@@ -968,6 +968,47 @@ class SaveMeBot:
         del context.user_data['action_item_id']
         return await self.start(update, context)
 
+    async def save_edited_content(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        self._report(update)
+        item_id = context.user_data.get('action_item_id')
+        if not item_id:
+            return await self.start(update, context)
+        
+        # קבלת סוג התוכן החדש
+        if update.message.text:
+            content_type = 'text'
+            content = update.message.text.strip()
+        elif update.message.document:
+            content_type = 'file'
+            file = await context.bot.get_file(update.message.document.file_id)
+            content = await file.download_as_bytearray()
+        elif update.message.photo:
+            content_type = 'image'
+            photo = update.message.photo[-1]  # הגודל הגדול ביותר
+            file = await context.bot.get_file(photo.file_id)
+            content = await file.download_as_bytearray()
+        elif update.message.video:
+            content_type = 'video'
+            file = await context.bot.get_file(update.message.video.file_id)
+            content = await file.download_as_bytearray()
+        elif update.message.audio or update.message.voice:
+            content_type = 'audio'
+            audio = update.message.audio or update.message.voice
+            file = await context.bot.get_file(audio.file_id)
+            content = await file.download_as_bytearray()
+        else:
+            await update.message.reply_text("❌ סוג תוכן לא נתמך.")
+            return await self.start(update, context)
+        
+        # עדכון התוכן בבסיס הנתונים
+        self.db.update_content(item_id, content_type, content if content_type == 'text' else '', 
+                             file_data=content if content_type != 'text' else None)
+        
+        await update.message.reply_text("✅ התוכן עודכן בהצלחה.")
+        await self.show_item_with_actions(update, context, item_id)
+        del context.user_data['action_item_id']
+        return await self.start(update, context)
+
     async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self._report(update)
         query = update.callback_query; await query.answer()
@@ -1021,7 +1062,7 @@ def main() -> None:
             AWAIT_SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.receive_subject_and_save)],
             AWAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_search_query)],
             AWAIT_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_note)],
-            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, lambda u,c: c.bot.send_message(u.effective_chat.id, "Edit not implemented yet"))], # Placeholder
+            AWAIT_EDIT: [MessageHandler(filters.ALL & ~filters.COMMAND, bot.save_edited_content)],
             AWAIT_SUBJECT_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.save_edited_subject)],
             AWAIT_MD_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.convert_text_to_md_and_send)],
             AWAIT_MULTIPART: [
