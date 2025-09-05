@@ -15,6 +15,8 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
+      - key: BOT_USERNAME
+        value: YOUR_BOT_USERNAME_HERE
       - key: WEBHOOK_URL
         value: https://save-me-bot.onrender.com
       - key: DATABASE_PATH
