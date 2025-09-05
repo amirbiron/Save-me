@@ -16,7 +16,7 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: BOT_USERNAME
-        value: YOUR_BOT_USERNAME_HERE
+        value: YOUR_BOT_USERNAME_HERE  # החלף בשם הבוט שלך מ-BotFather (ללא @)
       - key: WEBHOOK_URL
         value: https://save-me-bot.onrender.com
       - key: DATABASE_PATH
