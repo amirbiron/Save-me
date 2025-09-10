@@ -159,7 +159,7 @@ class InternalShareHandler:
                 # Telegram has message length limits; keep a safe preview size
                 if len(block) > 3500:
                     message += block[:3500] + "\n\\.\\.\\.\n"
-                    message += "\\[תוכן חתוך \\- השתמש בכפתור ההורדה או ההעתקה\\]"
+                    message += "\\[תוכן חתוך \\- השתמש בכפתור ההורדה\\]"
                 else:
                     message += block
             elif content_type == 'document':

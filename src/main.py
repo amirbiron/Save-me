@@ -626,10 +626,10 @@ class SaveMeBot:
             metadata_text += f"\n\n🗒️ **הערה:** {note}"
 
         pin_text = "📌 בטל קיבוע" if item.get('is_pinned') else "📌 קבע"
-        note_text = "✏️ ערוך הערה" if item.get('note') else "📝 הוסף הערה"
+        note_text = "📝 ערוך הערה" if item.get('note') else "📝 הוסף הערה"
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
-            [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}"), InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
+            [InlineKeyboardButton("🖊 ערוך נושא", callback_data=f"editsubject_{item_id}"), InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
             [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}"), InlineKeyboardButton("🕰️ תזכורת", callback_data=f"reminder_{item_id}")],
         ]
 
@@ -648,23 +648,11 @@ class SaveMeBot:
             if text_len > VERY_LONG_THRESHOLD_CHARS:
                 keyboard.append([InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"preview_{item_id}")])
 
-            # GitHub Gist button
-            gist_info = self.db.get_item_gist(item_id)
-            if gist_info:
-                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 Gist", url=gist_info['url']))
-            else:
-                content_buttons_row_gist_share.append(InlineKeyboardButton("🐙 Gist", callback_data=f"gist_{item_id}"))
+            # Internal share link then Gist (always consistent labels and order)
+            content_buttons_row_gist_share.append(InlineKeyboardButton("צור קישור פנימי 🔗", callback_data=f"share_{item_id}"))
+            content_buttons_row_gist_share.append(InlineKeyboardButton("Gist 🐙", callback_data=f"gist_{item_id}"))
 
-            # Internal share link button
-            share_info = self.db.get_item_share_info(item_id)
-            if share_info and share_info.get('token'):
-                share_url = self.share_handler.get_share_link(item_id)
-                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 קישור פנימי", url=share_url))
-            else:
-                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 צור קישור פנימי", callback_data=f"share_{item_id}"))
-
-            # Copy/Download row
-            content_buttons_row_copy_download.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+            # Download row (copy all removed per request)
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
         elif content_type == 'document' and file_id:
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
@@ -723,7 +711,7 @@ class SaveMeBot:
                             sent = await context.bot.send_message(chat_id=chat_id, text=chunk_text)
                         context.user_data['open_item_content_message_ids'].append(sent.message_id)
             else:
-                sent = await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
+                sent = await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתור 'הורדה'.")
                 context.user_data['open_item_content_message_ids'].append(sent.message_id)
         elif content_type and item.get('file_id'):
             send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
@@ -839,10 +827,9 @@ class SaveMeBot:
         item_id = context.user_data.get('action_item_id')
         if not item_id: return await self.start(update, context)
         self.db.update_note(item_id, update.message.text)
-        await update.message.reply_text("✅ ההערה עודכנה.")
         await self.show_item_with_actions(update, context, item_id)
         del context.user_data['action_item_id']
-        return await self.start(update, context)
+        return SELECTING_ACTION
 
     async def item_action_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
@@ -871,7 +858,7 @@ class SaveMeBot:
             return SELECTING_ACTION
 
         # New: content operations
-        if action in ['preview', 'copyall', 'copycode', 'download']:
+        if action in ['preview', 'download']:
             if item_id is None:
                 try:
                     item_id = int(item_id_str)
@@ -899,34 +886,10 @@ class SaveMeBot:
                 except BadRequest:
                     await context.bot.send_message(chat_id=chat_id, text=preview)
                 if len(text) > PREVIEW_THRESHOLD_CHARS:
-                    await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'העתק הכל' או 'הורדה'.")
+                    await context.bot.send_message(chat_id=chat_id, text="... המשך הושמט בתצוגה מקדימה. השתמש ב'הורדה'.")
                 return SELECTING_ACTION
 
-            if action == 'copyall':
-                text = item.get('content') or ''
-                if not text:
-                    await context.bot.send_message(chat_id=chat_id, text="אין טקסט להעתקה.")
-                    return SELECTING_ACTION
-                if is_fenced_code_block(text):
-                    code, lang = extract_fenced_code(text)
-                    safe_limit = max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
-                    for chunk in split_text_for_telegram(code, max_chars=safe_limit):
-                        fenced = f"```{lang or ''}\n{chunk}\n```"
-                        try:
-                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
-                        except BadRequest:
-                            escaped = html.escape(chunk)
-                            html_block = f"<pre><code>{escaped}</code></pre>"
-                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
-                else:
-                    safe_limit = TELEGRAM_MAX_MESSAGE_CHARS if not ("FORCE_CODE_BLOCKS" in globals() and FORCE_CODE_BLOCKS) else max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
-                    for chunk in split_text_for_telegram(text, max_chars=safe_limit):
-                        chunk_text, chunk_parse_mode = format_text_content_for_telegram(chunk)
-                        if chunk_parse_mode:
-                            await context.bot.send_message(chat_id=chat_id, text=chunk_text, parse_mode=chunk_parse_mode)
-                        else:
-                            await context.bot.send_message(chat_id=chat_id, text=chunk_text)
-                return SELECTING_ACTION
+            # copyall removed per request
 
             # copycode no longer needed; using native code rendering in show/copyall flows
 
@@ -954,7 +917,7 @@ class SaveMeBot:
                 return SELECTING_ACTION
 
         # Back button from item view to categories list
-        if action == 'back_categories':
+        if query.data == 'back_categories' or action == 'back_categories':
             # Best effort: delete content messages to clean view
             try:
                 ids = context.user_data.get('open_item_content_message_ids', [])
@@ -1078,10 +1041,9 @@ class SaveMeBot:
             return await self.start(update, context)
         new_subject = update.message.text.strip()
         self.db.update_subject(item_id, new_subject)
-        await update.message.reply_text("✅ הנושא עודכן.")
         await self.show_item_with_actions(update, context, item_id)
         del context.user_data['action_item_id']
-        return await self.start(update, context)
+        return SELECTING_ACTION
 
     async def setup_github(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """הגדרת GitHub token"""
@@ -1532,7 +1494,6 @@ class SaveMeBot:
         # עדכון התוכן בבסיס הנתונים
         self.db.update_content(item_id, content_type, content, file_id, file_name, caption)
         
-        await update.message.reply_text("✅ התוכן עודכן בהצלחה.")
         await self.show_item_with_actions(update, context, item_id)
         del context.user_data['action_item_id']
         # הישאר בתצוגה הנוכחית ללא הודעת ברוך הבא מיותרת
@@ -1583,7 +1544,7 @@ def main() -> None:
                 # Removed settings from main menu
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories$)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)$" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
