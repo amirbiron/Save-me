@@ -1544,7 +1544,7 @@ def main() -> None:
                 # Removed settings from main menu
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)$" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
