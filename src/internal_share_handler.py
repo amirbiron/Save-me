@@ -145,12 +145,23 @@ class InternalShareHandler:
             message += "\n" + "\\-" * 20 + "\n\n"
             
             if content_type == 'text' and content:
-                # For text content, show it directly
-                escaped_content = escape_md(content)
-                if len(escaped_content) > 3000:
-                    message += escaped_content[:3000] + "\n\\.\\.\\.\n\\[תוכן חתוך \\- הקובץ המלא זמין להורדה\\]"
+                # For text content, show it as a code block for easy copy/view
+                # Preserve existing fenced blocks if present
+                stripped = content.strip()
+                if stripped.startswith('```') and stripped.endswith('```'):
+                    # Already fenced - include as is
+                    block = stripped
                 else:
-                    message += escaped_content
+                    # Escape backticks to avoid breaking the fence in MarkdownV2
+                    safe_content = content.replace('`', '\\`')
+                    block = f"```\n{safe_content}\n```"
+
+                # Telegram has message length limits; keep a safe preview size
+                if len(block) > 3500:
+                    message += block[:3500] + "\n\\.\\.\\.\n"
+                    message += "\\[תוכן חתוך \\- השתמש בכפתור ההורדה או ההעתקה\\]"
+                else:
+                    message += block
             elif content_type == 'document':
                 file_name = escape_md(item_data.get('file_name', 'document'))
                 message += f"📎 קובץ מצורף: {file_name}"

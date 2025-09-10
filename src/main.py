@@ -412,11 +412,8 @@ class SaveMeBot:
         username = update.effective_user.first_name
         welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
         keyboard = [
-            [KeyboardButton("➕ הוסף תוכן")],
-            [KeyboardButton("📝 המרה ל-Markdown")],
-            [KeyboardButton("🧩 איסוף טקסט רב-הודעות")],
-            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
-            [KeyboardButton("⚙️ הגדרות")]
+            [KeyboardButton("➕ הוסף תוכן"), KeyboardButton("🧩 איסוף טקסט רב-הודעות")],
+            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         chat_id = update.effective_chat.id
@@ -632,10 +629,8 @@ class SaveMeBot:
         note_text = "✏️ ערוך הערה" if item.get('note') else "📝 הוסף הערה"
         keyboard = [
             [InlineKeyboardButton(pin_text, callback_data=f"pin_{item_id}")],
-            [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}")],
-            [InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
-            [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}")],
-            [InlineKeyboardButton("🕰️ תזכורת", callback_data=f"reminder_{item_id}")],
+            [InlineKeyboardButton("✏️ ערוך נושא", callback_data=f"editsubject_{item_id}"), InlineKeyboardButton("✏️ ערוך תוכן", callback_data=f"edit_{item_id}")],
+            [InlineKeyboardButton(note_text, callback_data=f"note_{item_id}"), InlineKeyboardButton("🕰️ תזכורת", callback_data=f"reminder_{item_id}")],
         ]
 
         # Content-aware action row
@@ -645,47 +640,53 @@ class SaveMeBot:
         text_content = item.get('content') or ''
         text_len = len(text_content)
 
-        content_buttons = []
+        content_buttons_row_gist_share = []
+        content_buttons_row_copy_download = []
         is_textual = content_type == 'text' or (content_type == 'document' and file_name.endswith('.md') and text_len > 0)
         if is_textual:
-            content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+            # Preview button (separate row) for very long text
             if text_len > VERY_LONG_THRESHOLD_CHARS:
-                content_buttons.insert(0, InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"preview_{item_id}"))
-                content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
-            else:
-                content_buttons.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
-            
-            # Add GitHub Gist button for code/text
+                keyboard.append([InlineKeyboardButton("👁️ תצוגה מקדימה", callback_data=f"preview_{item_id}")])
+
+            # GitHub Gist button
             gist_info = self.db.get_item_gist(item_id)
             if gist_info:
-                content_buttons.append(InlineKeyboardButton("🔗 Gist", url=gist_info['url']))
+                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 Gist", url=gist_info['url']))
             else:
-                content_buttons.append(InlineKeyboardButton("🐙 Create Gist", callback_data=f"gist_{item_id}"))
-            
-            # Add internal share link button
+                content_buttons_row_gist_share.append(InlineKeyboardButton("🐙 Gist", callback_data=f"gist_{item_id}"))
+
+            # Internal share link button
             share_info = self.db.get_item_share_info(item_id)
             if share_info and share_info.get('token'):
                 share_url = self.share_handler.get_share_link(item_id)
-                content_buttons.append(InlineKeyboardButton("🔗 קישור פנימי", url=share_url))
+                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 קישור פנימי", url=share_url))
             else:
-                content_buttons.append(InlineKeyboardButton("🔗 צור קישור פנימי", callback_data=f"share_{item_id}"))
-            
-            # Add copy code button when content is a fenced code block
-            # No extra button; native Telegram UI handles code copy within the message
-        elif content_type == 'document' and file_id:
-            content_buttons.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+                content_buttons_row_gist_share.append(InlineKeyboardButton("🔗 צור קישור פנימי", callback_data=f"share_{item_id}"))
 
-        if content_buttons:
-            keyboard.append(content_buttons)
+            # Copy/Download row
+            content_buttons_row_copy_download.append(InlineKeyboardButton("📋 העתק הכל", callback_data=f"copyall_{item_id}"))
+            content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+        elif content_type == 'document' and file_id:
+            content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+
+        if content_buttons_row_gist_share:
+            keyboard.append(content_buttons_row_gist_share)
+        if content_buttons_row_copy_download:
+            keyboard.append(content_buttons_row_copy_download)
 
         keyboard.append([InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 חזרה", callback_data="back_categories")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         chat_id = update_or_query.message.chat.id
+        # Reset tracked content messages for current view
+        context.user_data['open_item_content_message_ids'] = []
         if hasattr(update_or_query, 'edit_message_text'):
             await update_or_query.edit_message_text(metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            context.user_data['open_item_meta_message_id'] = update_or_query.message.message_id
         else:
-            await context.bot.send_message(chat_id=chat_id, text=metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            meta_msg = await context.bot.send_message(chat_id=chat_id, text=metadata_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            context.user_data['open_item_meta_message_id'] = meta_msg.message_id
 
         content_type = item.get('content_type')
         if content_type == 'text' or (content_type == 'document' and (item.get('file_name', '').endswith('.md')) and (item.get('content') is not None and item.get('content') != '')):
@@ -694,9 +695,10 @@ class SaveMeBot:
             elif text_len <= PREVIEW_THRESHOLD_CHARS:
                 text_to_send, parse_mode = format_text_content_for_telegram(text_content)
                 if parse_mode:
-                    await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
+                    sent = await context.bot.send_message(chat_id=chat_id, text=text_to_send, parse_mode=parse_mode)
                 else:
-                    await context.bot.send_message(chat_id=chat_id, text=text_to_send)
+                    sent = await context.bot.send_message(chat_id=chat_id, text=text_to_send)
+                context.user_data['open_item_content_message_ids'].append(sent.message_id)
             elif text_len <= VERY_LONG_THRESHOLD_CHARS:
                 if is_fenced_code_block(text_content):
                     code, lang = extract_fenced_code(text_content)
@@ -705,21 +707,24 @@ class SaveMeBot:
                     for chunk in split_text_for_telegram(code, max_chars=safe_limit):
                         fenced = f"```{lang or ''}\n{chunk}\n```"
                         try:
-                            await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
+                            sent = await context.bot.send_message(chat_id=chat_id, text=fenced, parse_mode=ParseMode.MARKDOWN_V2)
                         except BadRequest:
                             escaped = html.escape(chunk)
                             html_block = f"<pre><code>{escaped}</code></pre>"
-                            await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                            sent = await context.bot.send_message(chat_id=chat_id, text=html_block, parse_mode=ParseMode.HTML)
+                        context.user_data['open_item_content_message_ids'].append(sent.message_id)
                 else:
                     safe_limit = TELEGRAM_MAX_MESSAGE_CHARS if not ("FORCE_CODE_BLOCKS" in globals() and FORCE_CODE_BLOCKS) else max(1000, TELEGRAM_MAX_MESSAGE_CHARS - 100)
                     for chunk in split_text_for_telegram(text_content, max_chars=safe_limit):
                         chunk_text, chunk_parse_mode = format_text_content_for_telegram(chunk)
                         if chunk_parse_mode:
-                            await context.bot.send_message(chat_id=chat_id, text=chunk_text, parse_mode=chunk_parse_mode)
+                            sent = await context.bot.send_message(chat_id=chat_id, text=chunk_text, parse_mode=chunk_parse_mode)
                         else:
-                            await context.bot.send_message(chat_id=chat_id, text=chunk_text)
+                            sent = await context.bot.send_message(chat_id=chat_id, text=chunk_text)
+                        context.user_data['open_item_content_message_ids'].append(sent.message_id)
             else:
-                await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
+                sent = await context.bot.send_message(chat_id=chat_id, text="התוכן ארוך מאוד. השתמש בכפתורים לתצוגה/העתקה/הורדה.")
+                context.user_data['open_item_content_message_ids'].append(sent.message_id)
         elif content_type and item.get('file_id'):
             send_map = {'photo': context.bot.send_photo, 'document': context.bot.send_document, 'video': context.bot.send_video, 'voice': context.bot.send_voice}
             if content_type in send_map:
@@ -730,11 +735,12 @@ class SaveMeBot:
     async def show_categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self._report(update)
         categories = self.db.get_user_categories(update.effective_user.id)
+        chat_id = update.effective_chat.id
         if not categories:
-            await update.message.reply_text("אין קטגוריות עדיין.")
+            await context.bot.send_message(chat_id=chat_id, text="אין קטגוריות עדיין.")
             return
         keyboard = [[InlineKeyboardButton(f"{cat} ({self.db.get_category_count(update.effective_user.id, cat)})", callback_data=f"showcat_{cat}")] for cat in categories]
-        await update.message.reply_text("בחר קטגוריה להצגה:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(chat_id=chat_id, text="בחר קטגוריה להצגה:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def handle_search_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
@@ -841,7 +847,11 @@ class SaveMeBot:
     async def item_action_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         self._report(update)
         query = update.callback_query; await query.answer()
-        action, item_id_str = query.data.split('_', 1)
+        # Support actions without underscore (e.g., back_categories)
+        if '_' in query.data:
+            action, item_id_str = query.data.split('_', 1)
+        else:
+            action, item_id_str = query.data, ''
         # Some actions encode more data after the id (e.g., remset_{id}_{hours})
         # Defer strict parsing until needed
         try:
@@ -942,6 +952,27 @@ class SaveMeBot:
                     md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.{ext}"
                     await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
                 return SELECTING_ACTION
+
+        # Back button from item view to categories list
+        if action == 'back_categories':
+            # Best effort: delete content messages to clean view
+            try:
+                ids = context.user_data.get('open_item_content_message_ids', [])
+                for mid in ids:
+                    try:
+                        await context.bot.delete_message(chat_id=query.message.chat.id, message_id=mid)
+                    except Exception:
+                        pass
+                context.user_data['open_item_content_message_ids'] = []
+            except Exception:
+                pass
+            # Replace the metadata message with categories list
+            await self.show_categories(update, context)
+            try:
+                await query.delete_message()
+            except Exception:
+                pass
+            return SELECTING_ACTION
 
         # Reminder menu entry from item view
         if action == 'reminder':
@@ -1318,8 +1349,8 @@ class SaveMeBot:
             await query.edit_message_text(
                 f"📤 **קישור שיתוף פנימי קיים\!**\n\n"
                 f"הפריט כבר משותף בקישור:\n"
-                f"`{safe_url}`\n\n"
-                f"ניתן להעתיק את הקישור או להסיר את השיתוף\.",
+                f"```\n{safe_url}\n```\n"
+                f"ניתן לפתוח את הקישור או להסיר את השיתוף.",
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=reply_markup
             )
@@ -1331,7 +1362,7 @@ class SaveMeBot:
                 share_url = result['url']
                 
                 keyboard = [
-                    [InlineKeyboardButton("📋 העתק קישור", url=share_url)],
+                    [InlineKeyboardButton("🔗 פתח קישור", url=share_url)],
                     [InlineKeyboardButton("🗑️ הסר קישור", callback_data=f"unshare_{item_id}")],
                     [InlineKeyboardButton("🔙 חזור", callback_data=f"showitem_{item_id}")]
                 ]
@@ -1342,7 +1373,7 @@ class SaveMeBot:
                 await query.edit_message_text(
                     f"✅ **קישור שיתוף פנימי נוצר בהצלחה\!**\n\n"
                     f"📤 הקישור לשיתוף:\n"
-                    f"`{safe_url}`\n\n"
+                    f"```\n{safe_url}\n```\n"
                     f"שתף את הקישור עם כל מי שתרצה\!\n"
                     f"הם יוכלו לצפות בתוכן ולהעתיק אותו\.",
                     parse_mode=ParseMode.MARKDOWN_V2,
@@ -1504,7 +1535,8 @@ class SaveMeBot:
         await update.message.reply_text("✅ התוכן עודכן בהצלחה.")
         await self.show_item_with_actions(update, context, item_id)
         del context.user_data['action_item_id']
-        return await self.start(update, context)
+        # הישאר בתצוגה הנוכחית ללא הודעת ברוך הבא מיותרת
+        return SELECTING_ACTION
 
     async def show_category_items(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self._report(update)
@@ -1544,14 +1576,14 @@ def main() -> None:
         states={
                          SELECTING_ACTION: [
                 MessageHandler(filters.TEXT & filters.Regex('^➕ הוסף תוכן$'), bot.ask_for_content),
-                MessageHandler(filters.TEXT & filters.Regex('^📝 המרה ל-Markdown$'), bot.ask_for_md_text),
+                # Removed Markdown conversion command from main menu
                 MessageHandler(filters.TEXT & filters.Regex('^🧩 איסוף טקסט רב-הודעות$'), bot.start_multipart),
                 MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
-                MessageHandler(filters.TEXT & filters.Regex('^⚙️ הגדרות$'), bot.show_settings),
+                # Removed settings from main menu
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|copyall_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories$)" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
