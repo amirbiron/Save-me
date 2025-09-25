@@ -652,7 +652,8 @@ class SaveMeBot:
             content_buttons_row_gist_share.append(InlineKeyboardButton("צור קישור פנימי 🔗", callback_data=f"share_{item_id}"))
             content_buttons_row_gist_share.append(InlineKeyboardButton("Gist 🐙", callback_data=f"gist_{item_id}"))
 
-            # Download row (copy all removed per request)
+            # Download/Export row
+            content_buttons_row_copy_download.append(InlineKeyboardButton("📄 ייצוא ל‑MD", callback_data=f"exportmd_{item_id}"))
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
         elif content_type == 'document' and file_id:
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
@@ -858,7 +859,7 @@ class SaveMeBot:
             return SELECTING_ACTION
 
         # New: content operations
-        if action in ['preview', 'download']:
+        if action in ['preview', 'download', 'exportmd']:
             if item_id is None:
                 try:
                     item_id = int(item_id_str)
@@ -914,6 +915,58 @@ class SaveMeBot:
                     ext = 'md' if looks_md else 'txt'
                     md_bytes.name = item.get('file_name') or f"note-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.{ext}"
                     await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name)
+                return SELECTING_ACTION
+
+            if action == 'exportmd':
+                # Export textual content to a Markdown file
+                content_type = item.get('content_type')
+                text = item.get('content') or ''
+                if not (content_type == 'text' or (content_type == 'document' and item.get('file_name', '').endswith('.md') and text)):
+                    await context.bot.send_message(chat_id=chat_id, text="ניתן לייצא ל‑MD רק תוכן טקסטואלי.")
+                    return SELECTING_ACTION
+
+                subject = item.get('subject', '').strip() or 'note'
+                category = item.get('category', '').strip()
+                created_at = item.get('created_at', '')
+                note = item.get('note', '')
+
+                # Build simple, readable Markdown
+                parts: list[str] = []
+                parts.append(f"# {subject}")
+                meta_lines = []
+                if category:
+                    meta_lines.append(f"קטגוריה: {category}")
+                if created_at:
+                    meta_lines.append(f"נוצר: {created_at}")
+                if meta_lines:
+                    parts.append("\n".join(meta_lines))
+                if note:
+                    parts.append(f"\nהערה: {note}")
+
+                # Decide how to embed content
+                body = text
+                try:
+                    if is_fenced_code_block(text):
+                        body = text
+                    else:
+                        markdown_like = re.search(r'(^|\n)#{1,6}\s', text) or re.search(r'\[[^\]]+\]\([^\)]+\)', text) or re.search(r'\*\*.+\*\*', text)
+                        if markdown_like:
+                            body = text
+                        else:
+                            lang = detect_code_language(text) or ''
+                            body = f"```{lang}\n{text}\n```"
+                except Exception:
+                    body = text
+
+                parts.append("")
+                parts.append(body)
+                md_text = "\n\n".join(parts)
+
+                md_bytes = BytesIO(md_text.encode('utf-8'))
+                # Sanitize filename
+                base_name = re.sub(r"[^\w\-א-ת ]", "_", subject).strip().replace(" ", "-") or 'note'
+                md_bytes.name = f"{base_name}-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
+                await context.bot.send_document(chat_id=chat_id, document=md_bytes, filename=md_bytes.name, caption="קובץ Markdown שיוצא מהפריט")
                 return SELECTING_ACTION
 
         # Back button from item view to categories list
@@ -1544,7 +1597,7 @@ def main() -> None:
                 # Removed settings from main menu
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|exportmd_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
