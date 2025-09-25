@@ -22,6 +22,7 @@ from database.database_manager import Database
 from activity_reporter import create_reporter
 from github_gist_handler import GithubGistHandler
 from internal_share_handler import InternalShareHandler
+from markdown_exporter import MarkdownExporter
 
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
@@ -232,6 +233,7 @@ class SaveMeBot:
         self.db = Database(db_path=db_path)
         self.gist_handler = GithubGistHandler(self.db)
         self.share_handler = InternalShareHandler(self.db)
+        self.markdown_exporter = MarkdownExporter()
         self._start_reminder_job = False
 
     async def reminder_hours_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -413,7 +415,8 @@ class SaveMeBot:
         welcome_text = f"שלום {username}! 👋\nברוך הבא לבוט 'שמור לי'.\nבחר פעולה מהתפריט:"
         keyboard = [
             [KeyboardButton("➕ הוסף תוכן"), KeyboardButton("🧩 איסוף טקסט רב-הודעות")],
-            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")]
+            [KeyboardButton("🔍 חיפוש"), KeyboardButton("📚 הצג קטגוריות")],
+            [KeyboardButton("📤 ייצוא לMarkdown")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         chat_id = update.effective_chat.id
@@ -652,8 +655,9 @@ class SaveMeBot:
             content_buttons_row_gist_share.append(InlineKeyboardButton("צור קישור פנימי 🔗", callback_data=f"share_{item_id}"))
             content_buttons_row_gist_share.append(InlineKeyboardButton("Gist 🐙", callback_data=f"gist_{item_id}"))
 
-            # Download row (copy all removed per request)
+            # Download row with markdown export
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
+            content_buttons_row_copy_download.append(InlineKeyboardButton("📝 ייצוא MD", callback_data=f"export_md_{item_id}"))
         elif content_type == 'document' and file_id:
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
 
@@ -1026,6 +1030,10 @@ class SaveMeBot:
         # Handle unshare
         if action.startswith('unshare'):
             return await self.handle_unshare(update, context)
+        
+        # Handle markdown export for single item
+        if action.startswith('export_md'):
+            return await self.handle_markdown_export(update, context)
 
         context.user_data['action_item_id'] = item_id
         if action == 'note': await query.edit_message_text("הקלד את ההערה:"); return AWAIT_NOTE
@@ -1201,8 +1209,8 @@ class SaveMeBot:
         await query.edit_message_text(
             "🐙 **יצירת GitHub Gist**\n\n"
             "האם ברצונך ליצור Gist ציבורי או פרטי?\n\n"
-            "• **ציבורי** \- כל אחד יכול לראות \(מופיע בחיפוש\)\n"
-            "• **פרטי** \- רק מי שיש לו את הקישור",
+            "• **ציבורי** \\- כל אחד יכול לראות \\(מופיע בחיפוש\\)\n"
+            "• **פרטי** \\- רק מי שיש לו את הקישור",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.MARKDOWN_V2
         )
@@ -1244,7 +1252,7 @@ class SaveMeBot:
             
             try:
                 await query.edit_message_text(
-                    "✅ **Gist נוצר בהצלחה\!**\n\n"
+                    "✅ **Gist נוצר בהצלחה\\!**\n\n"
                     f"📝 קובץ: {safe_filename}\n"
                     f"🔐 סוג: {safe_visibility}\n"
                     f"🔗 קישור: {safe_url}\n\n"
@@ -1282,6 +1290,156 @@ class SaveMeBot:
         del context.user_data['gist_item_id']
         return await self.start(update, context)
     
+    async def handle_markdown_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """טיפול בייצוא פריט לMarkdown"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Extract item ID from callback data
+        data = query.data
+        
+        if data.startswith('export_md_'):
+            # ייצוא פריט בודד
+            item_id = int(data.replace('export_md_', ''))
+            item = self.db.get_item(item_id)
+            
+            if not item:
+                await query.edit_message_text("❌ הפריט לא נמצא.")
+                return SELECTING_ACTION
+            
+            # יצירת Markdown
+            user_info = {'username': update.effective_user.first_name}
+            markdown_content = self.markdown_exporter.export_single_item_to_markdown(item)
+            
+            # יצירת קובץ
+            filename = f"{item.get('subject', 'item')}-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
+            md_file = self.markdown_exporter.create_markdown_file(markdown_content, filename)
+            
+            # שליחת הקובץ
+            await context.bot.send_document(
+                chat_id=query.message.chat.id,
+                document=md_file,
+                filename=filename,
+                caption=f"📝 **יוצא לMarkdown:** {item.get('subject', 'פריט')}\n"
+                        f"📁 **קטגוריה:** {item.get('category', 'כללי')}"
+            )
+            
+            await query.answer("✅ הפריט יוצא בהצלחה לMarkdown")
+            
+        elif data == 'export_all_md':
+            # ייצוא כל הפריטים
+            user_id = update.effective_user.id
+            all_items = self.db.get_all_user_items(user_id)
+            
+            if not all_items:
+                await query.edit_message_text("❌ אין פריטים לייצוא.")
+                return SELECTING_ACTION
+            
+            await query.edit_message_text("⏳ מייצא את כל הפריטים לMarkdown...")
+            
+            # יצירת Markdown
+            user_info = {'username': update.effective_user.first_name}
+            markdown_content = self.markdown_exporter.export_items_to_markdown(all_items, user_info)
+            
+            # יצירת קובץ
+            filename = f"all-items-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
+            md_file = self.markdown_exporter.create_markdown_file(markdown_content, filename)
+            
+            # שליחת הקובץ
+            await context.bot.send_document(
+                chat_id=query.message.chat.id,
+                document=md_file,
+                filename=filename,
+                caption=f"📚 **יוצאו {len(all_items)} פריטים לMarkdown**\n"
+                        f"הקובץ כולל תוכן עניינים, סטטיסטיקות וכל הפריטים השמורים."
+            )
+            
+            await query.answer("✅ כל הפריטים יוצאו בהצלחה")
+            
+        elif data == 'export_category_md':
+            # בחירת קטגוריה לייצוא
+            user_id = update.effective_user.id
+            categories = self.db.get_user_categories(user_id)
+            
+            if not categories:
+                await query.edit_message_text("❌ אין קטגוריות לייצוא.")
+                return SELECTING_ACTION
+            
+            keyboard = []
+            for category in categories:
+                count = self.db.get_category_count(user_id, category)
+                keyboard.append([InlineKeyboardButton(
+                    f"📁 {category} ({count} פריטים)", 
+                    callback_data=f"export_cat_{category}"
+                )])
+            keyboard.append([InlineKeyboardButton("❌ ביטול", callback_data="cancel")])
+            
+            await query.edit_message_text(
+                "📁 **בחר קטגוריה לייצוא:**",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        elif data.startswith('export_cat_'):
+            # ייצוא קטגוריה ספציפית
+            category = data.replace('export_cat_', '')
+            user_id = update.effective_user.id
+            items = self.db.get_category_items(user_id, category)
+            
+            if not items:
+                await query.edit_message_text(f"❌ אין פריטים בקטגוריית {category}.")
+                return SELECTING_ACTION
+            
+            await query.edit_message_text(f"⏳ מייצא את קטגוריית {category} לMarkdown...")
+            
+            # יצירת Markdown
+            user_info = {'username': update.effective_user.first_name}
+            markdown_content = self.markdown_exporter.export_items_to_markdown(items, user_info)
+            
+            # יצירת קובץ
+            safe_category = category.replace('/', '-').replace('\\', '-')
+            filename = f"{safe_category}-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
+            md_file = self.markdown_exporter.create_markdown_file(markdown_content, filename)
+            
+            # שליחת הקובץ
+            await context.bot.send_document(
+                chat_id=query.message.chat.id,
+                document=md_file,
+                filename=filename,
+                caption=f"📁 **יוצאו {len(items)} פריטים מקטגוריית {category}**\n"
+                        f"הקובץ כולל תוכן עניינים, סטטיסטיקות וכל הפריטים בקטגוריה."
+            )
+            
+            await query.answer(f"✅ קטגוריית {category} יוצאה בהצלחה")
+            
+        return SELECTING_ACTION
+    
+    async def ask_for_markdown_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """שואל את המשתמש מה לייצא לMarkdown"""
+        self._report(update)
+        
+        user_id = update.effective_user.id
+        items_count = self.db.get_user_items_count(user_id)
+        
+        if items_count == 0:
+            await update.message.reply_text("❌ אין לך פריטים שמורים לייצוא.")
+            return await self.start(update, context)
+        
+        keyboard = [
+            [InlineKeyboardButton(f"📚 ייצא הכל ({items_count} פריטים)", callback_data="export_all_md")],
+            [InlineKeyboardButton("📁 בחר קטגוריה", callback_data="export_category_md")],
+            [InlineKeyboardButton("❌ ביטול", callback_data="cancel")]
+        ]
+        
+        await update.message.reply_text(
+            "📝 **ייצוא לMarkdown**\n\n"
+            "מה תרצה לייצא?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        return SELECTING_ACTION
+
     async def handle_share_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """טיפול ביצירת קישור פנימי לשיתוף"""
         query = update.callback_query
@@ -1309,7 +1467,7 @@ class SaveMeBot:
             safe_url = escape_markdown(share_url)
             
             await query.edit_message_text(
-                f"📤 **קישור שיתוף פנימי קיים\!**\n\n"
+                f"📤 **קישור שיתוף פנימי קיים\\!**\n\n"
                 f"הפריט כבר משותף בקישור:\n"
                 f"```\n{safe_url}\n```\n"
                 f"ניתן לפתוח את הקישור או להסיר את השיתוף.",
@@ -1333,11 +1491,11 @@ class SaveMeBot:
                 safe_url = escape_markdown(share_url)
                 
                 await query.edit_message_text(
-                    f"✅ **קישור שיתוף פנימי נוצר בהצלחה\!**\n\n"
+                    f"✅ **קישור שיתוף פנימי נוצר בהצלחה\\!**\n\n"
                     f"📤 הקישור לשיתוף:\n"
                     f"```\n{safe_url}\n```\n"
-                    f"שתף את הקישור עם כל מי שתרצה\!\n"
-                    f"הם יוכלו לצפות בתוכן ולהעתיק אותו\.",
+                    f"שתף את הקישור עם כל מי שתרצה\\!\n"
+                    f"הם יוכלו לצפות בתוכן ולהעתיק אותו\\.",
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=reply_markup
                 )
@@ -1541,11 +1699,13 @@ def main() -> None:
                 MessageHandler(filters.TEXT & filters.Regex('^🧩 איסוף טקסט רב-הודעות$'), bot.start_multipart),
                 MessageHandler(filters.TEXT & filters.Regex('^🔍 חיפוש$'), bot.ask_for_search_query),
                 MessageHandler(filters.TEXT & filters.Regex('^📚 הצג קטגוריות$'), bot.show_categories),
+                MessageHandler(filters.TEXT & filters.Regex('^📤 ייצוא לMarkdown$'), bot.ask_for_markdown_export),
                 # Removed settings from main menu
                 CallbackQueryHandler(bot.show_category_items, pattern="^showcat_"),
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
-                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories)" ),
+                CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories|export_md_)" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
+                CallbackQueryHandler(bot.handle_markdown_export, pattern="^(export_all_md|export_category_md|export_cat_)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
             ],
