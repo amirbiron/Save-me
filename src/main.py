@@ -1356,6 +1356,62 @@ class SaveMeBot:
             
             await query.answer("✅ כל הפריטים יוצאו בהצלחה")
             
+        elif data == 'export_category_md':
+            # בחירת קטגוריה לייצוא
+            user_id = update.effective_user.id
+            categories = self.db.get_user_categories(user_id)
+            
+            if not categories:
+                await query.edit_message_text("❌ אין קטגוריות לייצוא.")
+                return SELECTING_ACTION
+            
+            keyboard = []
+            for category in categories:
+                count = self.db.get_category_count(user_id, category)
+                keyboard.append([InlineKeyboardButton(
+                    f"📁 {category} ({count} פריטים)", 
+                    callback_data=f"export_cat_{category}"
+                )])
+            keyboard.append([InlineKeyboardButton("❌ ביטול", callback_data="cancel")])
+            
+            await query.edit_message_text(
+                "📁 **בחר קטגוריה לייצוא:**",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        elif data.startswith('export_cat_'):
+            # ייצוא קטגוריה ספציפית
+            category = data.replace('export_cat_', '')
+            user_id = update.effective_user.id
+            items = self.db.get_category_items(user_id, category)
+            
+            if not items:
+                await query.edit_message_text(f"❌ אין פריטים בקטגוריית {category}.")
+                return SELECTING_ACTION
+            
+            await query.edit_message_text(f"⏳ מייצא את קטגוריית {category} לMarkdown...")
+            
+            # יצירת Markdown
+            user_info = {'username': update.effective_user.first_name}
+            markdown_content = self.markdown_exporter.export_items_to_markdown(items, user_info)
+            
+            # יצירת קובץ
+            safe_category = category.replace('/', '-').replace('\\', '-')
+            filename = f"{safe_category}-{datetime.now(tz=LOCAL_TZ).strftime('%Y%m%d-%H%M%S')}.md"
+            md_file = self.markdown_exporter.create_markdown_file(markdown_content, filename)
+            
+            # שליחת הקובץ
+            await context.bot.send_document(
+                chat_id=query.message.chat.id,
+                document=md_file,
+                filename=filename,
+                caption=f"📁 **יוצאו {len(items)} פריטים מקטגוריית {category}**\n"
+                        f"הקובץ כולל תוכן עניינים, סטטיסטיקות וכל הפריטים בקטגוריה."
+            )
+            
+            await query.answer(f"✅ קטגוריית {category} יוצאה בהצלחה")
+            
         return SELECTING_ACTION
     
     async def ask_for_markdown_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1649,7 +1705,7 @@ def main() -> None:
                 CallbackQueryHandler(bot.upload_router, pattern="^(upload_start_multipart|upload_close)$"),
                 CallbackQueryHandler(bot.item_action_router, pattern="^(showitem_|pin_|delete_|note_|edit_|editsubject_|preview_|download_|reminder_|remset_|remdate_|remcustom_|remclear_|remignore_|gist_|share_|unshare_|back_categories|export_md_)" ),
                 CallbackQueryHandler(bot.handle_shared_item_action, pattern="^(copy_shared_|download_shared_|main_menu)"),
-                CallbackQueryHandler(bot.handle_markdown_export, pattern="^(export_all_md|export_category_md)$"),
+                CallbackQueryHandler(bot.handle_markdown_export, pattern="^(export_all_md|export_category_md|export_cat_)"),
                 CallbackQueryHandler(bot.handle_github_action, pattern="^(github_replace|github_remove|cancel|setup_github_now)$"),
                 CallbackQueryHandler(bot.calendar_router, pattern="^(cal_|calpick_|time_|time_custom|remcancel_)"),
             ],
