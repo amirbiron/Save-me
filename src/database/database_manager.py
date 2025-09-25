@@ -698,3 +698,33 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting item share info: {e}")
             return None
+    
+    def get_all_user_items(self, user_id: int) -> List[Dict[str, Any]]:
+        """מחזיר את כל הפריטים של המשתמש"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM saved_items 
+                    WHERE user_id = ? 
+                    ORDER BY is_pinned DESC, created_at DESC
+                ''', (user_id,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting all user items: {e}")
+            return []
+    
+    def get_user_items_count(self, user_id: int) -> int:
+        """מחזיר את מספר הפריטים של המשתמש"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT COUNT(*) FROM saved_items 
+                    WHERE user_id = ?
+                ''', (user_id,))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            logger.error(f"Error getting user items count: {e}")
+            return 0
