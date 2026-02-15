@@ -35,15 +35,27 @@ def build_gist_button(item_id: int):
     python-telegram-bot version. If not supported, we fall back to sending a
     raw dict reply_markup (still works with Telegram API) later on.
     """
+    callback_data = f"gist_{item_id}"
+    # Newer libraries may expose the field directly.
     try:
         return InlineKeyboardButton(
             "Gist",
-            callback_data=f"gist_{item_id}",
+            callback_data=callback_data,
             icon_custom_emoji_id=GIST_BUTTON_ICON_CUSTOM_EMOJI_ID,
         )
     except TypeError:
-        # Older python-telegram-bot: InlineKeyboardButton doesn't accept icon_custom_emoji_id
-        btn = InlineKeyboardButton("Gist", callback_data=f"gist_{item_id}")
+        pass
+
+    # python-telegram-bot supports unknown Bot API fields via api_kwargs.
+    try:
+        return InlineKeyboardButton(
+            "Gist",
+            callback_data=callback_data,
+            api_kwargs={"icon_custom_emoji_id": GIST_BUTTON_ICON_CUSTOM_EMOJI_ID},
+        )
+    except TypeError:
+        # Very old fallback: send as raw dict later on.
+        btn = InlineKeyboardButton("Gist", callback_data=callback_data)
         as_dict = btn.to_dict()
         as_dict["icon_custom_emoji_id"] = GIST_BUTTON_ICON_CUSTOM_EMOJI_ID
         return as_dict
