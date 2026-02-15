@@ -27,13 +27,13 @@ from markdown_exporter import MarkdownExporter
 # Custom emoji for the "Gist" button (Telegram Bot API 9.4+)
 GIST_BUTTON_ICON_CUSTOM_EMOJI_ID = "5368324170671202305"
 
-def build_gist_button(item_id: int):
+def build_gist_button(item_id: int) -> InlineKeyboardButton:
     """
     Build the "Gist" inline button with a custom emoji icon (Bot API 9.4).
 
     We try to use the official object field when supported by the installed
-    python-telegram-bot version. If not supported, we fall back to sending a
-    raw dict reply_markup (still works with Telegram API) later on.
+    python-telegram-bot version. If not supported, we try `api_kwargs`.
+    As a last resort, we return a normal button without a custom emoji icon.
     """
     callback_data = f"gist_{item_id}"
     # Newer libraries may expose the field directly.
@@ -54,11 +54,7 @@ def build_gist_button(item_id: int):
             api_kwargs={"icon_custom_emoji_id": GIST_BUTTON_ICON_CUSTOM_EMOJI_ID},
         )
     except TypeError:
-        # Very old fallback: send as raw dict later on.
-        btn = InlineKeyboardButton("Gist", callback_data=callback_data)
-        as_dict = btn.to_dict()
-        as_dict["icon_custom_emoji_id"] = GIST_BUTTON_ICON_CUSTOM_EMOJI_ID
-        return as_dict
+        return InlineKeyboardButton("Gist", callback_data=callback_data)
 
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
@@ -704,20 +700,7 @@ class SaveMeBot:
 
         keyboard.append([InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")])
         keyboard.append([InlineKeyboardButton("🔙 חזרה", callback_data="back_categories")])
-        # If we used a raw dict button (for older python-telegram-bot), we must send reply_markup as a dict.
-        # Otherwise InlineKeyboardMarkup expects InlineKeyboardButton objects only.
-        if any(isinstance(btn, dict) for row in keyboard for btn in row):
-            reply_markup = {
-                "inline_keyboard": [
-                    [
-                        (btn if isinstance(btn, dict) else btn.to_dict())
-                        for btn in row
-                    ]
-                    for row in keyboard
-                ]
-            }
-        else:
-            reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
         chat_id = update_or_query.message.chat.id
         # Reset tracked content messages for current view
