@@ -24,6 +24,38 @@ from github_gist_handler import GithubGistHandler
 from internal_share_handler import InternalShareHandler
 from markdown_exporter import MarkdownExporter
 
+# Custom emoji for the "Gist" button (Telegram Bot API 9.4+)
+GIST_BUTTON_ICON_CUSTOM_EMOJI_ID = "5368324170671202305"
+
+def build_gist_button(item_id: int) -> InlineKeyboardButton:
+    """
+    Build the "Gist" inline button with a custom emoji icon (Bot API 9.4).
+
+    We try to use the official object field when supported by the installed
+    python-telegram-bot version. If not supported, we try `api_kwargs`.
+    As a last resort, we return a normal button without a custom emoji icon.
+    """
+    callback_data = f"gist_{item_id}"
+    # Newer libraries may expose the field directly.
+    try:
+        return InlineKeyboardButton(
+            "Gist",
+            callback_data=callback_data,
+            icon_custom_emoji_id=GIST_BUTTON_ICON_CUSTOM_EMOJI_ID,
+        )
+    except TypeError:
+        pass
+
+    # python-telegram-bot supports unknown Bot API fields via api_kwargs.
+    try:
+        return InlineKeyboardButton(
+            "Gist",
+            callback_data=callback_data,
+            api_kwargs={"icon_custom_emoji_id": GIST_BUTTON_ICON_CUSTOM_EMOJI_ID},
+        )
+    except TypeError:
+        return InlineKeyboardButton("Gist", callback_data=callback_data)
+
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
     mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
@@ -653,7 +685,7 @@ class SaveMeBot:
 
             # Internal share link then Gist (always consistent labels and order)
             content_buttons_row_gist_share.append(InlineKeyboardButton("צור קישור פנימי 🔗", callback_data=f"share_{item_id}"))
-            content_buttons_row_gist_share.append(InlineKeyboardButton("Gist 🐙", callback_data=f"gist_{item_id}"))
+            content_buttons_row_gist_share.append(build_gist_button(item_id))
 
             # Download row with markdown export
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
