@@ -24,6 +24,30 @@ from github_gist_handler import GithubGistHandler
 from internal_share_handler import InternalShareHandler
 from markdown_exporter import MarkdownExporter
 
+# Custom emoji for the "Gist" button (Telegram Bot API 9.4+)
+GIST_BUTTON_ICON_CUSTOM_EMOJI_ID = "5368324170671202305"
+
+def build_gist_button(item_id: int):
+    """
+    Build the "Gist" inline button with a custom emoji icon (Bot API 9.4).
+
+    We try to use the official object field when supported by the installed
+    python-telegram-bot version. If not supported, we fall back to sending a
+    raw dict reply_markup (still works with Telegram API) later on.
+    """
+    try:
+        return InlineKeyboardButton(
+            "Gist",
+            callback_data=f"gist_{item_id}",
+            icon_custom_emoji_id=GIST_BUTTON_ICON_CUSTOM_EMOJI_ID,
+        )
+    except TypeError:
+        # Older python-telegram-bot: InlineKeyboardButton doesn't accept icon_custom_emoji_id
+        btn = InlineKeyboardButton("Gist", callback_data=f"gist_{item_id}")
+        as_dict = btn.to_dict()
+        as_dict["icon_custom_emoji_id"] = GIST_BUTTON_ICON_CUSTOM_EMOJI_ID
+        return as_dict
+
 # Activity Reporter setup (keep after variable loading)
 reporter = create_reporter(
     mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
@@ -653,7 +677,7 @@ class SaveMeBot:
 
             # Internal share link then Gist (always consistent labels and order)
             content_buttons_row_gist_share.append(InlineKeyboardButton("צור קישור פנימי 🔗", callback_data=f"share_{item_id}"))
-            content_buttons_row_gist_share.append(InlineKeyboardButton("Gist 🐙", callback_data=f"gist_{item_id}"))
+            content_buttons_row_gist_share.append(build_gist_button(item_id))
 
             # Download row with markdown export
             content_buttons_row_copy_download.append(InlineKeyboardButton("📥 הורדה", callback_data=f"download_{item_id}"))
@@ -668,7 +692,20 @@ class SaveMeBot:
 
         keyboard.append([InlineKeyboardButton("🗑️ מחק", callback_data=f"delete_{item_id}")])
         keyboard.append([InlineKeyboardButton("🔙 חזרה", callback_data="back_categories")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # If we used a raw dict button (for older python-telegram-bot), we must send reply_markup as a dict.
+        # Otherwise InlineKeyboardMarkup expects InlineKeyboardButton objects only.
+        if any(isinstance(btn, dict) for row in keyboard for btn in row):
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        (btn if isinstance(btn, dict) else btn.to_dict())
+                        for btn in row
+                    ]
+                    for row in keyboard
+                ]
+            }
+        else:
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
         chat_id = update_or_query.message.chat.id
         # Reset tracked content messages for current view
